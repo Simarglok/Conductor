@@ -9,3 +9,6 @@ dist
 build
 node_modules
 .next
+
+# Airflow runtime logs (generated inside containers)
+logs/
