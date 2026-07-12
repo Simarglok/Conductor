@@ -35,8 +35,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__API_AUTH__JWT_SECRET: conductor-dev-jwt-secret-change-in-prod
 
     # ── Internal ──
-    _AIRFLOW_DB_UPGRADE: "false"
-    _AIRFLOW_WWW_USER_CREATE: "false"
+    _AIRFLOW_DB_MIGRATE: "false"
+    _AIRFLOW_WWW_USER_PASSWORD: admin
   volumes:
     - ./dags:/opt/airflow/dags
   depends_on:
