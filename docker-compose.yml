@@ -1,39 +1,44 @@
 # Conductor — Development Docker Compose
 # Apple Silicon ready · Airflow 3.3.0 · dbt-core 2.0.0a4
 
+# ── Airflow environment variables (separate anchor for merge support) ──
+x-airflow-env: &airflow-env
+  # Core
+  AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+  AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+
+  # Database
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://conductor:conductor@postgres:5432/conductor
+
+  # Celery
+  AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+  AIRFLOW__CELERY__RESULT_BACKEND: "db+postgresql://conductor:***@postgres:5432/conductor"
+
+  # API Server (replaces webserver in Airflow 3.x)
+  AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
+  AIRFLOW__API__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080
+
+  # Dag Processor
+  AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+  AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST: >
+    [{"name":"local-dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags"}}]
+
+  # Auth
+  AIRFLOW__API_AUTH__JWT_SECRET: conductor-dev-jwt-secret-change-in-prod
+
+  # Internal
+  _AIRFLOW_WWW_USER_PASSWORD: admin
+
+# ── Airflow common service config ──
 x-airflow-common: &airflow-common
   build:
     context: ./docker/airflow
     args:
       AIRFLOW_VERSION: 3.3.0
   environment:
-    # ── Core ──
-    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
-    AIRFLOW__CORE__LOAD_EXAMPLES: "False"
-    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
-
-    # ── Database ──
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://conductor:conductor@postgres:5432/conductor
-
-    # ── Celery ──
-    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
-    AIRFLOW__CELERY__RESULT_BACKEND: "db+postgresql://conductor:conductor@postgres:5432/conductor"
-
-    # ── API Server (replaces webserver in Airflow 3.x) ──
-    AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
-    AIRFLOW__API__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080
-
-    # ── Dag Processor ──
-    AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
-    AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST: >
-      [{"name":"local-dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags"}}]
-
-    # ── Auth (simple admin for dev) ──
-    AIRFLOW__API_AUTH__JWT_SECRET: conductor-dev-jwt-secret-change-in-prod
-
-    # ── Internal ──
+    <<: *airflow-env
     _AIRFLOW_DB_MIGRATE: "false"
-    _AIRFLOW_WWW_USER_PASSWORD: admin
   volumes:
     - ./dags:/opt/airflow/dags
   depends_on:
@@ -105,8 +110,9 @@ services:
   # ─── Airflow 3.x — DB Init (run once with --profile init) ───
   airflow-db-init:
     <<: *airflow-common
+    restart: "no"
     environment:
-      <<: *airflow-common
+      <<: *airflow-env
       _AIRFLOW_DB_MIGRATE: "true"
     entrypoint: /bin/bash
     command:
