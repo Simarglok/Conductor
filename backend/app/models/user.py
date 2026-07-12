@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.models import Base, new_uuid, utcnow
+from app.models.base import Base, new_uuid, utcnow
 from sqlalchemy import Boolean, DateTime, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 

@@ -1,7 +1,19 @@
 from __future__ import annotations
 
-from app.config import settings
-from app.database import async_session_factory, engine
-from app.models import Base
+from datetime import datetime, timezone
+from uuid import uuid4
 
-__all__ = ["Base", "engine", "async_session_factory", "settings"]
+from sqlalchemy import DateTime, func
+from sqlalchemy.orm import DeclarativeBase
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def new_uuid() -> str:
+    return uuid4().hex
