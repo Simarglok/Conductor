@@ -63,7 +63,7 @@ services:
       timeout: 3s
       retries: 5
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     restart: unless-stopped
 
   # ─── Cache / Message Broker ───
