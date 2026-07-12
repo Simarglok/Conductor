@@ -8,12 +8,18 @@ x-airflow-env: &airflow-env
   AIRFLOW__CORE__LOAD_EXAMPLES: "False"
   AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
 
+  # Auth
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__API_AUTH__JWT_SECRET: conductor-dev-jwt-secret-change-in-prod
+
   # Database
-  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://conductor:conductor@postgres:5432/conductor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+    postgresql+psycopg2://conductor:conductor@postgres:5432/conductor
 
   # Celery
   AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
-  AIRFLOW__CELERY__RESULT_BACKEND: "db+postgresql://conductor:conductor@postgres:5432/conductor"
+  AIRFLOW__CELERY__RESULT_BACKEND: >-
+    db+postgresql://conductor:conductor@postgres:5432/conductor
 
   # API Server (replaces webserver in Airflow 3.x)
   AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
@@ -23,10 +29,6 @@ x-airflow-env: &airflow-env
   AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
   AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST: >
     [{"name":"local-dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags"}}]
-
-  # Auth
-  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-  AIRFLOW__API_AUTH__JWT_SECRET: conductor-dev-jwt-secret-change-in-prod
 
   # Internal
   _AIRFLOW_WWW_USER_PASSWORD: admin
@@ -42,6 +44,8 @@ x-airflow-common: &airflow-common
     _AIRFLOW_DB_MIGRATE: "false"
   volumes:
     - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
   depends_on:
     postgres:
       condition: service_healthy
@@ -88,7 +92,7 @@ services:
     env_file: ./backend/.env
     environment:
       CONDUCTOR_DATABASE_URL: postgresql+asyncpg://conductor:conductor@postgres:5432/conductor
-      CONDUCTOR_REDIS_URL: redis://redis:6379/0
+      CONDUCTOR_REDIS_URL: redis://redis:6379/1  # DB 1 — Airflow uses DB 0
       CONDUCTOR_SECRET_KEY: dev-secret-change-in-production
     ports:
       - "8000:8000"
