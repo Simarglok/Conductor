@@ -13,7 +13,7 @@ x-airflow-env: &airflow-env
 
   # Celery
   AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
-  AIRFLOW__CELERY__RESULT_BACKEND: "db+postgresql://conductor:***@postgres:5432/conductor"
+  AIRFLOW__CELERY__RESULT_BACKEND: "db+postgresql://conductor:conductor@postgres:5432/conductor"
 
   # API Server (replaces webserver in Airflow 3.x)
   AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
@@ -25,6 +25,7 @@ x-airflow-env: &airflow-env
     [{"name":"local-dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags"}}]
 
   # Auth
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
   AIRFLOW__API_AUTH__JWT_SECRET: conductor-dev-jwt-secret-change-in-prod
 
   # Internal
@@ -118,7 +119,14 @@ services:
     command:
       - -c
       - |
-        airflow db migrate
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@conductor.local
     profiles:
       - init
 
