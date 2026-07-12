@@ -93,11 +93,11 @@ The platform orchestrates the following open-source building blocks, pre-configu
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Browser (User)                           │
-│       React Dashboard  ←  code-server IDE (iframe)             │
+│       React Dashboard  ←  code-server IDE (iframe)              │
 └──────────────────────┬──────────────────────────────────────────┘
                        │ HTTPS
 ┌──────────────────────▼──────────────────────────────────────────┐
-│                    FastAPI (Control Plane)                       │
+│                    FastAPI (Control Plane)                      │
 │  • Auth (OAuth2/OIDC)   • Container Orchestration (Docker/K8s)  │
 │  • Manifest Sync        • AI Gate (future)                      │
 │  • User Session Mgmt    • RBAC Enforcement                      │
@@ -105,26 +105,26 @@ The platform orchestrates the following open-source building blocks, pre-configu
          │              │                  │
          ▼              ▼                  ▼
 ┌──────────────┐ ┌──────────────┐ ┌──────────────────────────────┐
-│  PostgreSQL  │ │    Redis     │ │  Docker/K8s API               │
+│  PostgreSQL  │ │    Redis     │ │  Docker/K8s API              │
 │  (Metadata)  │ │  (Celery +   │ │  • Spawn per-user code-server│
-│              │ │   Cache)     │ │  • Isolated workspaces        │
+│              │ │   Cache)     │ │  • Isolated workspaces       │
 └──────────────┘ └──────┬───────┘ └──────────────────────────────┘
                         │
 ┌───────────────────────▼────────────────────────────────────────┐
-│              Apache Airflow 3.x (Production)                    │
+│              Apache Airflow 3.x (Production)                   │
 │                                                                │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
 │  │  Dag         │  │  Scheduler   │  │  API Server          │  │
 │  │  Processor   │  │  (Celery     │  │  ┌──────┐ ┌───────┐  │  │
 │  │  (Git Bundle)│  │   Executor)  │  │  │core  │ │exec   │  │  │
 │  └──────────────┘  └──────┬───────┘  │  │(UI)  │ │(Task  │  │  │
-│                           │           │  │      │ │ SDK)  │  │  │
-│                           ▼           │  └──────┘ └───────┘  │
-│                    ┌──────────────┐   └──────────────────────┘  │
-│                    │  Worker      │                              │
-│                    │  (dbt Core)  │                              │
-│                    └──────────────┘                              │
-└──────────────────────────────────────────────────────────────────┘
+│                           │          │  │      │ │ SDK)  │  │  │
+│                           ▼          │  └──────┘ └───────┘  │  |
+│                    ┌──────────────┐  └──────────────────────┘  │
+│                    │  Worker      │                            │
+│                    │  (dbt Core)  │                            │
+│                    └──────────────┘                            │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ---
