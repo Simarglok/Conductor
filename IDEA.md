@@ -3,7 +3,7 @@
 ## 1. Objective & Vision
 **Conductor** integrates **dbt Core**, **Apache Airflow 3.x**, **code-server (VS Code IDE)**, and a **Server-Side AI Assistant** into a single, unified workspace for data analysts and engineers.
 
-The main commercial value proposition is eliminating per-seat SaaS costs ($100+/user) and ensuring absolute data privacy by keeping all metadata and LLM inference inside the client's infrastructure loop.
+The main value proposition is eliminating per-seat SaaS costs and ensuring absolute data privacy by keeping all metadata and LLM inference inside the client's infrastructure loop.
 
 ---
 

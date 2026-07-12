@@ -1,6 +1,6 @@
 # Conductor
 
-Open-source data transformation platform — integrates **dbt Core**, **Apache Airflow 3.x**, **code-server (VS Code IDE)**, and a **Server-Side AI Assistant** into a single workspace for data analysts and engineers.
+Open-source data transformation platform — integrates **dbt Core**, **Apache Airflow 3.x**, **code-server (VS Code IDE)**, and a **server-side AI assistant** into a single workspace for data analysts and engineers.
 
 ## Stack
 
@@ -88,7 +88,41 @@ Conductor/
 │   ├── airflow/Dockerfile    # Airflow + dbt-core image
 │   └── code-server/Dockerfile# VS Code + dbt image
 ├── docker-compose.yml        # Full dev environment
+├── logs/                     # Airflow task logs (shared volume)
+├── plugins/                  # Airflow plugins (shared volume)
 └── workspaces/               # code-server user data
+```
+
+## Architecture Summary
+
+```
+┌─────────────┐   ┌─────────────┐
+│  postgres   │   │    redis    │
+│  18-alpine  │   │  8.6.4-alp  │
+└──────┬──────┘   └──────┬──────┘
+       │                 │
+┌──────▼─────────────────▼──────────────────────────────────────┐
+│                      fastapi :8000                              │
+│            GET /api/v1/health · /docs (Swagger)                │
+└────────────────────────────────────────────────────────────────┘
+       │
+┌──────▼────────────────────────────────────────────────────────┐
+│                    Airflow 3.3.0                               │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐  │
+│  │dag-processor │  │  scheduler   │  │   api-server :8080  │  │
+│  │(LocalDagBndl)│  │  CeleryExec  │  │  core + execution  │  │
+│  └──────────────┘  └──────┬───────┘  └────────────────────┘  │
+│                           │                                   │
+│                    ┌──────▼───────┐                           │
+│                    │    worker    │                           │
+│                    │  + dbt-core  │                           │
+│                    └──────────────┘                           │
+└───────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────┐
+│                    code-server :8443                           │
+│              VS Code + dbt-core + Python/YAML extensions      │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 ## Troubleshooting
@@ -110,3 +144,18 @@ env -u PYTHONPATH .venv/bin/pip install -e "backend[dev]"
 ```
 
 The `env -u PYTHONPATH` is needed because Hermes Agent injects its own site-packages into `PYTHONPATH`.
+
+### Airflow restart loops
+If Airflow containers restart in a loop, re-run init:
+```bash
+docker compose down -v
+docker compose --profile init up airflow-db-init
+docker compose up -d
+```
+
+### Viewing Airflow worker logs
+```bash
+docker compose logs airflow-worker
+docker compose logs airflow-scheduler
+docker compose logs airflow-api-server
+```
