@@ -1,3 +1,4 @@
+from app.models.airflow_instance import AirflowInstance
 from app.models.base import Base  # noqa: F401
 from app.models.environment import Environment
 from app.models.git_config import GitConfig
@@ -15,4 +16,5 @@ __all__ = [
     "ProjectMember",
     "GitConfig",
     "Environment",
+    "AirflowInstance",
 ]
