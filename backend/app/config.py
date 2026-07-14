@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
+    refresh_token_expire_days: int = 7
+    redis_refresh_prefix: str = "refresh_token:"
 
     # ── Airflow (will be wired later) ──
     airflow_base_url: str = "http://airflow-api-server:8080"
