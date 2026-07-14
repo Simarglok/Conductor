@@ -1,6 +1,25 @@
+# ── Python ──
 __pycache__
 *.pyc
-.git
-.env
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ── Local dev ──
 .venv
-venv
+.env
+.conductor.local
+
+# ── IDE / Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── macOS ──
+.DS_Store
+
+# ── Docker ──
+.docker/

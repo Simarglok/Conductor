@@ -8,6 +8,7 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.models.base import Base
+import app.models  # noqa: F401 — register tables on Base.metadata
 
 # ── Alembic Config ──
 config = context.config

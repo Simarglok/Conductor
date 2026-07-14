@@ -12,7 +12,7 @@
 
 | Service | Status | Details |
 |---|---|---|
-| PostgreSQL 18.4 | ✅ Working | `postgres:18-alpine`, arm64, volume at `/var/lib/postgresql` |
+| PostgreSQL 18.4 | ✅ Working | `postgres:18-alpine`, arm64, volume at `/var/lib/postgresql/18/docker` |
 | Redis 8.6.4 | ✅ Working | `redis:8.6.4-alpine`, arm64 |
 | FastAPI backend | ✅ Working | Python 3.14, asyncpg, SQLAlchemy async, Alembic, health endpoint |
 | Airflow 3.3.0 | ✅ Working | 5 containers: scheduler, dag-processor, api-server, worker, db-init |
@@ -109,8 +109,8 @@
 | **Encryption at rest** | ⏸️ Deferred | Master-key pattern for warehouse credentials. Vault vs pgcrypto vs KMS — TBD. |
 | **KubernetesExecutor** | ⏸️ Future | CeleryExecutor is fine for dev. K8sExecutor for production multi-tenant. |
 | **Kubernetes Helm Chart** | ⏸️ Future | Enterprise deployment path from docker-compose. |
-| **Secrets management** | ⏸️ Pending | Currently hardcoded in docker-compose. Move to `.env` file. |
-| **Airflow healthchecks** | ⏸️ Pending | Health endpoint per service — nice to have for dev stack. |
+|| **Secrets management** | ✅ Done | Moved to root `.env` file with `VAR:-default` fallbacks in docker-compose. |
+|| **Airflow healthchecks** | ✅ Done | FastAPI healthcheck added. Airflow healthchecks still pending. |
 | **dbt Power User extension** | ⏸️ TBD | Now paid (Altimate.ai). Need open-source alternative for code-server. |
 | **Triggerer** | ❌ Won't add | Deferrable operators not needed for dbt pipelines. |
 | **Simple Auth Manager** | ❌ Won't use | Can't set fixed password via env in Airflow 3.3.0. FAB works. |
@@ -123,7 +123,7 @@
 2. **Single-user code-server** — only one instance mapped. Multi-user provisioning via FastAPI not yet implemented.
 3. **No React dashboard** — CLI/FastAPI-only for now.
 4. **No OAuth2** — FAB auth manager with static `admin/admin` for dev only.
-5. **Secrets in compose file** — JWT secret, DB passwords, etc. should be in `.env`. Acceptable for dev.
+5. **Secrets in .env file** — all secrets extracted to `.env` at project root with `:-default` fallbacks. Credentials no longer hardcoded in docker-compose.yml.
 6. **dbt-core 2.0.0 alpha** — `2.0.0a4` is pre-release. Track release for stable version.
 
 ---
@@ -133,12 +133,12 @@
 | Package | Version | Why |
 |---|---|---|
 | Python | 3.14.6 | Latest stable, future-proof |
-| FastAPI | 0.139+ | Async, auto-docs, modern |
+| FastAPI | 0.115+ | Async, auto-docs, modern |
 | PostgreSQL | 18.4 | Latest major release |
 | Redis | 8.6.4 | Latest stable, Celery broker |
 | Airflow | 3.3.0 | Latest stable, modern arch |
 | dbt-core | 2.0.0a4 | alpha, will be stable soon |
 | SQLAlchemy | 2.0+ | Async support via asyncpg |
-| Alembic | 1.18+ | DB migrations |
-| code-server | latest | VS Code in browser |
+| Alembic | 1.13+ | DB migrations |
+| code-server | 4.98.0 | VS Code in browser, pinned for reproducibility |
 | Node | 22 LTS | For React dashboard |

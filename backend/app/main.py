@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,17 +10,28 @@ from app.database import engine
 from app.models.base import Base
 from app.routers import health
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Create tables on startup (dev convenience — Alembic is the prod path)."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    await engine.dispose()
+
+
 app = FastAPI(
     title="Conductor API",
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # ── CORS: allow the React dashboard + code-server iframe ──
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in production
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,15 +39,3 @@ app.add_middleware(
 
 # ── Routers ──
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    """Create tables on startup (dev convenience — Alembic is the prod path)."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    await engine.dispose()

@@ -137,8 +137,8 @@ The current task is to build a solid local development foundation using **Docker
 
 | Service | Image | Role |
 |---|---|---|
-| `postgres` | postgres:16 | Metadata DB for Conductor + Airflow |
-| `redis` | redis:7 | Celery broker + FastAPI cache/sessions |
+| `postgres` | postgres:18-alpine | Metadata DB for Conductor + Airflow |
+| `redis` | redis:8.6.4-alpine | Celery broker + FastAPI cache/sessions |
 | `fastapi` | _(build)_ | Core backend: auth, orchestration, API |
 | `react-ui` | _(build, nginx)_ | Dashboard + IDE access |
 | `airflow-db-init` | apache/airflow:3.3.0 | DB migrations & Dag Bundle setup |

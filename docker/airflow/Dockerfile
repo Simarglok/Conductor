@@ -11,7 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 USER airflow
 
-# ── dbt-core + Celery for Airflow ──
+# ── dbt-core for Airflow worker ──
 RUN pip install --no-cache-dir \
-    "dbt-core==2.0.0a4" \
-    "apache-airflow[celery]==${AIRFLOW_VERSION}"
+    "dbt-core==2.0.0a4"

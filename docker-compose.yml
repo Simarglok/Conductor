@@ -1,5 +1,11 @@
 # Conductor — Development Docker Compose
 # Apple Silicon ready · Airflow 3.3.0 · dbt-core 2.0.0a4
+#
+# FIRST TIME:  docker compose --profile init up airflow-db-init && docker compose up -d
+# SUBSEQUENT:  docker compose up -d
+#
+# Secrets are read from .env at project root (gitignored).
+# See .env.example for all available variables.
 
 # ── Airflow environment variables (separate anchor for merge support) ──
 x-airflow-env: &airflow-env
@@ -10,19 +16,20 @@ x-airflow-env: &airflow-env
 
   # Auth
   AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-  AIRFLOW__API_AUTH__JWT_SECRET: conductor-dev-jwt-secret-change-in-prod
+  AIRFLOW__API_AUTH__JWT_SECRET: ${CONDUCTOR_JWT_SECRET:-conductor-dev-jwt-secret-change-in-prod}
 
   # Database
   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
-    postgresql+psycopg2://conductor:conductor@postgres:5432/conductor
+    postgresql+psycopg2://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/${CONDUCTOR_DB_NAME:-conductor}
 
   # Celery
-  AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+  AIRFLOW__CELERY__BROKER_URL: >-
+    redis://${CONDUCTOR_REDIS_HOST:-redis}:${CONDUCTOR_REDIS_PORT:-6379}/${CONDUCTOR_REDIS_DB:-0}
   AIRFLOW__CELERY__RESULT_BACKEND: >-
-    db+postgresql://conductor:conductor@postgres:5432/conductor
+    db+postgresql://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/${CONDUCTOR_DB_NAME:-conductor}
 
   # API Server (replaces webserver in Airflow 3.x)
-  AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
+  AIRFLOW__API__BASE_URL: http://localhost:8080
   AIRFLOW__API__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080
 
   # Dag Processor
@@ -30,8 +37,8 @@ x-airflow-env: &airflow-env
   AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST: >
     [{"name":"local-dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags"}}]
 
-  # Internal
-  _AIRFLOW_WWW_USER_PASSWORD: admin
+  # _AIRFLOW_WWW_USER_PASSWORD removed — unused in Airflow 3.x
+  # Admin user created via `airflow users create` in airflow-db-init
 
 # ── Airflow common service config ──
 x-airflow-common: &airflow-common
@@ -59,18 +66,18 @@ services:
   postgres:
     image: postgres:18-alpine
     environment:
-      POSTGRES_USER: conductor
-      POSTGRES_PASSWORD: conductor
-      POSTGRES_DB: conductor
+      POSTGRES_USER: ${CONDUCTOR_DB_USER:-conductor}
+      POSTGRES_PASSWORD: ${CONDUCTOR_DB_PASSWORD:-conductor}
+      POSTGRES_DB: ${CONDUCTOR_DB_NAME:-conductor}
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U conductor"]
+      test: ["CMD-SHELL", "pg_isready -U ${CONDUCTOR_DB_USER:-conductor}"]
       interval: 5s
       timeout: 3s
       retries: 5
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/18/docker
     restart: unless-stopped
 
   # ─── Cache / Message Broker ───
@@ -91,9 +98,11 @@ services:
     image: conductor-backend:latest
     env_file: ./backend/.env
     environment:
-      CONDUCTOR_DATABASE_URL: postgresql+asyncpg://conductor:conductor@postgres:5432/conductor
-      CONDUCTOR_REDIS_URL: redis://redis:6379/1  # DB 1 — Airflow uses DB 0
-      CONDUCTOR_SECRET_KEY: dev-secret-change-in-production
+      CONDUCTOR_DATABASE_URL: >-
+        postgresql+asyncpg://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/${CONDUCTOR_DB_NAME:-conductor}
+      CONDUCTOR_REDIS_URL: >-
+        redis://${CONDUCTOR_REDIS_HOST:-redis}:${CONDUCTOR_REDIS_PORT:-6379}/1  # DB 1 — Airflow uses DB 0
+      CONDUCTOR_SECRET_KEY: ${CONDUCTOR_JWT_SECRET:-conductor-dev-jwt-secret-change-in-prod}
     ports:
       - "8000:8000"
     volumes:
@@ -104,6 +113,12 @@ services:
       redis:
         condition: service_started
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health').status == 200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ─── Conductor Frontend (placeholder — TBD) ───
   # react-ui:
@@ -126,7 +141,7 @@ services:
         airflow db migrate &&
         airflow users create \
           --username admin \
-          --password admin \
+          --password ${CONDUCTOR_AIRFLOW_ADMIN_PASSWORD:-admin} \
           --firstname Admin \
           --lastname User \
           --role Admin \
@@ -161,7 +176,7 @@ services:
     build: ./docker/code-server
     image: conductor-code-server:latest
     environment:
-      PASSWORD: conductor
+      PASSWORD: ${CONDUCTOR_CODE_SERVER_PASSWORD:-conductor}
       DEFAULT_WORKSPACE: /workspace
     ports:
       - "8443:8080"

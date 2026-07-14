@@ -4,11 +4,14 @@ __pycache__
 venv
 .env
 .conductor.local
-*.egg-info
+*.egg-info/
 dist
 build
+node_modules/**
 node_modules
 .next
+
+.DS_Store
 
 # Airflow runtime logs (generated inside containers)
 logs/
