@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # ── Workspace (code-server) ──
     code_server_host: str = "http://code-server:8080"
+    code_server_jwt_secret: str = "conductor-cs-jwt-secret-change-in-prod"
 
 
 settings = Settings()
