@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine
 from app.models.base import Base
-from app.routers import admin, auth, health, projects
+from app.routers import admin, airflow_lifecycle, auth, health, projects
 
 
 @asynccontextmanager
@@ -41,4 +41,5 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(projects.router, prefix="/api/v1", tags=["projects"])
+app.include_router(airflow_lifecycle.router, prefix="/api/v1", tags=["airflow"])
 app.include_router(admin.router, prefix="/api/v1", tags=["admin"])
