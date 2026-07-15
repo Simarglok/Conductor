@@ -11,6 +11,7 @@ from app.auth.deps import get_current_user
 from app.auth.permissions import require_super_admin
 from app.database import get_db_session
 from app.models.environment import Environment
+from app.models.git_config import GitConfig
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.role import Role
@@ -20,6 +21,15 @@ from app.schemas.project import (
     ProjectCreateRequest,
     ProjectResponse,
     ProjectUpdateRequest,
+)
+from app.schemas.settings import (
+    EnvironmentCreateRequest,
+    EnvironmentResponse,
+    EnvironmentUpdateRequest,
+    GitConfigResponse,
+    GitConfigUpdateRequest,
+    ProjectSettingsResponse,
+    ProjectSettingsUpdateRequest,
 )
 
 router = APIRouter()
@@ -460,3 +470,227 @@ async def remove_member(
 
     await db.delete(member)
     await db.commit()
+
+
+# ─── Settings ───
+
+
+@router.get("/projects/{slug}/git", response_model=GitConfigResponse)
+async def get_git_config(
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _ensure_access(user, project.id, db)
+
+    git_result = await db.execute(
+        select(GitConfig).where(GitConfig.project_id == project.id)
+    )
+    config = git_result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="Git config not found")
+
+    return GitConfigResponse(
+        repo_url=config.repo_url,
+        auth_type=config.auth_type,
+        default_branch=config.default_branch,
+        dbt_path=config.dbt_path,
+        dags_path=config.dags_path,
+        created_at=config.created_at,
+        updated_at=config.updated_at,
+    )
+
+
+@router.put("/projects/{slug}/git", response_model=GitConfigResponse)
+async def update_git_config(
+    slug: str,
+    body: GitConfigUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _ensure_admin_access(user, project.id, db)
+
+    git_result = await db.execute(
+        select(GitConfig).where(GitConfig.project_id == project.id)
+    )
+    config = git_result.scalar_one_or_none()
+    if not config:
+        config = GitConfig(project_id=project.id, repo_url="", auth_type="https")
+        db.add(config)
+        await db.flush()
+
+    update_data = body.model_dump(exclude_unset=True, exclude={"credentials", "webhook_secret"})
+    if update_data:
+        for key, value in update_data.items():
+            setattr(config, key, value)
+
+    # Handle encrypted fields
+    if body.credentials is not None:
+        config.credentials_encrypted = body.credentials
+    if body.webhook_secret is not None:
+        config.webhook_secret_encrypted = body.webhook_secret
+
+    await db.commit()
+    await db.refresh(config)
+
+    return GitConfigResponse(
+        repo_url=config.repo_url,
+        auth_type=config.auth_type,
+        default_branch=config.default_branch,
+        dbt_path=config.dbt_path,
+        dags_path=config.dags_path,
+        created_at=config.created_at,
+        updated_at=config.updated_at,
+    )
+
+
+@router.get("/projects/{slug}/environments", response_model=list[EnvironmentResponse])
+async def list_environments(
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _ensure_access(user, project.id, db)
+
+    env_result = await db.execute(
+        select(Environment)
+        .where(Environment.project_id == project.id)
+        .order_by(Environment.name)
+    )
+    return env_result.scalars().all()
+
+
+@router.post("/projects/{slug}/environments", response_model=EnvironmentResponse, status_code=201)
+async def create_environment(
+    slug: str,
+    body: EnvironmentCreateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _ensure_admin_access(user, project.id, db)
+
+    env = Environment(
+        project_id=project.id,
+        name=body.name,
+        branch_name=body.branch_name,
+        is_protected=body.is_protected,
+    )
+    db.add(env)
+    await db.commit()
+    await db.refresh(env)
+    return env
+
+
+@router.patch("/projects/{slug}/environments/{env_id}", response_model=EnvironmentResponse)
+async def update_environment(
+    slug: str,
+    env_id: str,
+    body: EnvironmentUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _ensure_admin_access(user, project.id, db)
+
+    env_result = await db.execute(
+        select(Environment).where(
+            Environment.id == env_id, Environment.project_id == project.id
+        )
+    )
+    env = env_result.scalar_one_or_none()
+    if not env:
+        raise HTTPException(status_code=404, detail="Environment not found")
+
+    update_data = body.model_dump(exclude_unset=True)
+    if update_data:
+        for key, value in update_data.items():
+            setattr(env, key, value)
+        await db.commit()
+        await db.refresh(env)
+    return env
+
+
+@router.delete("/projects/{slug}/environments/{env_id}", status_code=204)
+async def delete_environment(
+    slug: str,
+    env_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _ensure_admin_access(user, project.id, db)
+
+    env_result = await db.execute(
+        select(Environment).where(
+            Environment.id == env_id, Environment.project_id == project.id
+        )
+    )
+    env = env_result.scalar_one_or_none()
+    if not env:
+        raise HTTPException(status_code=404, detail="Environment not found")
+    await db.delete(env)
+    await db.commit()
+
+
+@router.get("/projects/{slug}/settings", response_model=ProjectSettingsResponse)
+async def get_settings(
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _ensure_access(user, project.id, db)
+
+    return ProjectSettingsResponse(
+        self_approve_enabled=project.self_approve_enabled,
+    )
+
+
+@router.patch("/projects/{slug}/settings", response_model=ProjectSettingsResponse)
+async def update_settings(
+    slug: str,
+    body: ProjectSettingsUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _ensure_admin_access(user, project.id, db)
+
+    update_data = body.model_dump(exclude_unset=True)
+    if update_data:
+        for key, value in update_data.items():
+            setattr(project, key, value)
+        await db.commit()
+        await db.refresh(project)
+
+    return ProjectSettingsResponse(
+        self_approve_enabled=project.self_approve_enabled,
+    )
