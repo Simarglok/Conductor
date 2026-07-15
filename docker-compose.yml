@@ -18,23 +18,23 @@ x-airflow-env: &airflow-env
   AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
   AIRFLOW__API_AUTH__JWT_SECRET: ${CONDUCTOR_JWT_SECRET:-conductor-dev-jwt-secret-change-in-prod}
 
-  # Database
+  # Database — overridden per project
   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
-    postgresql+psycopg2://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/${CONDUCTOR_DB_NAME:-conductor}
+    postgresql+psycopg2://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/change_me
 
   # Celery
   AIRFLOW__CELERY__BROKER_URL: >-
     redis://${CONDUCTOR_REDIS_HOST:-redis}:${CONDUCTOR_REDIS_PORT:-6379}/${CONDUCTOR_REDIS_DB:-0}
   AIRFLOW__CELERY__RESULT_BACKEND: >-
-    db+postgresql://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/${CONDUCTOR_DB_NAME:-conductor}
+    db+postgresql://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/change_me
 
-  # API Server (replaces webserver in Airflow 3.x)
+  # API Server
   AIRFLOW__API__BASE_URL: http://localhost:8080
   AIRFLOW__API__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080
 
   # Dag Processor
   AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
-  AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST: >
+  AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST: >-
     [{"name":"local-dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags"}}]
 
   # _AIRFLOW_WWW_USER_PASSWORD removed — unused in Airflow 3.x
@@ -101,8 +101,10 @@ services:
       CONDUCTOR_DATABASE_URL: >-
         postgresql+asyncpg://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/${CONDUCTOR_DB_NAME:-conductor}
       CONDUCTOR_REDIS_URL: >-
-        redis://${CONDUCTOR_REDIS_HOST:-redis}:${CONDUCTOR_REDIS_PORT:-6379}/1  # DB 1 — Airflow uses DB 0
+        redis://${CONDUCTOR_REDIS_HOST:-redis}:${CONDUCTOR_REDIS_PORT:-6379}/1
       CONDUCTOR_SECRET_KEY: ${CONDUCTOR_JWT_SECRET:-conductor-dev-jwt-secret-change-in-prod}
+      CONDUCTOR_CODE_SERVER_HOST: http://code-server:8080
+      CONDUCTOR_CODE_SERVER_JWT_SECRET: ${CONDUCTOR_CODE_SERVER_JWT_SECRET:-conductor-cs-jwt-secret}
     ports:
       - "8000:8000"
     volumes:
@@ -171,18 +173,33 @@ services:
     <<: *airflow-common
     command: airflow celery worker
 
-  # ─── code-server (dev sandbox, single-user for now) ───
+  # ─── code-server (multiuser, JWT auth) ───
   code-server:
     build: ./docker/code-server
     image: conductor-code-server:latest
     environment:
-      PASSWORD: ${CONDUCTOR_CODE_SERVER_PASSWORD:-conductor}
+      CODE_SERVER_AUTH: jwt
+      CODE_SERVER_JWT_SECRET: ${CONDUCTOR_CODE_SERVER_JWT_SECRET:-conductor-cs-jwt-secret}
+      PASSWORD: ""
       DEFAULT_WORKSPACE: /workspace
     ports:
       - "8443:8080"
     volumes:
       - ./workspaces:/workspace
-      - ./dags:/workspace/dags
+      - ./dags:/workspace/dags:ro
+    restart: unless-stopped
+
+  # ─── Frontend (React SPA) ───
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    depends_on:
+      - fastapi
     restart: unless-stopped
 
 volumes:
