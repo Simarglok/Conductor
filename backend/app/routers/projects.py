@@ -15,6 +15,7 @@ from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.role import Role
 from app.models.user import User
+from app.schemas.member import AddMemberRequest, ChangeRoleRequest, MemberResponse
 from app.schemas.project import (
     ProjectCreateRequest,
     ProjectResponse,
@@ -268,3 +269,194 @@ async def _ensure_admin_access(user: User, project_id: str, db: AsyncSession):
     member = result.scalar_one_or_none()
     if not member or member.role.name not in ("project_admin",):
         raise HTTPException(status_code=403, detail="Project admin access required")
+
+
+# ─── Members ───
+
+
+@router.get("/projects/{slug}/members", response_model=list[MemberResponse])
+async def list_members(
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _ensure_access(user, project.id, db)
+
+    stmt = (
+        select(ProjectMember)
+        .where(ProjectMember.project_id == project.id)
+        .options(selectinload(ProjectMember.user), selectinload(ProjectMember.role))
+        .order_by(ProjectMember.created_at)
+    )
+    result = await db.execute(stmt)
+    members = result.scalars().all()
+
+    return [
+        MemberResponse(
+            user_id=m.user.id,
+            email=m.user.email,
+            display_name=m.user.display_name,
+            role_name=m.role.name,
+            role_id=m.role.id,
+            joined_at=m.created_at,
+        )
+        for m in members
+    ]
+
+
+@router.post("/projects/{slug}/members", response_model=MemberResponse, status_code=201)
+async def add_member(
+    slug: str,
+    body: AddMemberRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _ensure_admin_access(user, project.id, db)
+
+    # Find user by email
+    user_result = await db.execute(
+        select(User).where(User.email == body.email)
+    )
+    target_user = user_result.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found by email")
+
+    # Check not already a member
+    existing = await db.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project.id,
+            ProjectMember.user_id == target_user.id,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="User is already a member")
+
+    # Find role
+    role_result = await db.execute(
+        select(Role).where(Role.name == body.role_name)
+    )
+    role = role_result.scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=400, detail=f"Role '{body.role_name}' not found")
+
+    member = ProjectMember(
+        project_id=project.id,
+        user_id=target_user.id,
+        role_id=role.id,
+    )
+    db.add(member)
+    await db.commit()
+    await db.refresh(member)
+
+    return MemberResponse(
+        user_id=target_user.id,
+        email=target_user.email,
+        display_name=target_user.display_name,
+        role_name=role.name,
+        role_id=role.id,
+        joined_at=member.created_at,
+    )
+
+
+@router.patch("/projects/{slug}/members/{user_id}", response_model=MemberResponse)
+async def change_member_role(
+    slug: str,
+    user_id: str,
+    body: ChangeRoleRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _ensure_admin_access(user, project.id, db)
+
+    # Find role
+    role_result = await db.execute(
+        select(Role).where(Role.name == body.role_name)
+    )
+    role = role_result.scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=400, detail=f"Role '{body.role_name}' not found")
+
+    # Find member
+    result = await db.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project.id,
+            ProjectMember.user_id == user_id,
+        )
+    )
+    member = result.scalar_one_or_none()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    member.role_id = role.id
+    await db.commit()
+    await db.refresh(member)
+
+    # Fetch user+role for response
+    u_result = await db.execute(select(User).where(User.id == user_id))
+    target_user = u_result.scalar_one()
+
+    return MemberResponse(
+        user_id=target_user.id,
+        email=target_user.email,
+        display_name=target_user.display_name,
+        role_name=role.name,
+        role_id=role.id,
+        joined_at=member.created_at,
+    )
+
+
+@router.delete("/projects/{slug}/members/{user_id}", status_code=204)
+async def remove_member(
+    slug: str,
+    user_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    result = await db.execute(select(Project).where(Project.slug == slug))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _ensure_admin_access(user, project.id, db)
+
+    result = await db.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project.id,
+            ProjectMember.user_id == user_id,
+        )
+    )
+    member = result.scalar_one_or_none()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    # Prevent removing the last project_admin
+    if member.role_id == "project_admin":
+        admin_count = await db.execute(
+            select(func.count()).select_from(ProjectMember).where(
+                ProjectMember.project_id == project.id,
+                ProjectMember.role_id == "project_admin",
+            )
+        )
+        count_val = admin_count.scalar() or 0
+        if count_val <= 1:
+            raise HTTPException(
+                status_code=400, detail="Cannot remove the last project admin"
+            )
+
+    await db.delete(member)
+    await db.commit()
