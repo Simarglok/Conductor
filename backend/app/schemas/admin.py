@@ -49,3 +49,12 @@ class PermissionItem(BaseModel):
     resource: str
     action: str
     constraint: str | None
+
+
+class AdminProjectResponse(BaseModel):
+    id: str
+    name: str
+    slug: str
+    member_count: int
+    airflow_status: str
+    created_at: datetime

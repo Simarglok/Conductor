@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
     redis_refresh_prefix: str = "refresh_token:"
 
+    # ── Seed admin ──
+    admin_email: str = "admin@conductor.local"
+    admin_password: str = "admin"
+    admin_name: str = "Admin"
+
     # ── Airflow (will be wired later) ──
     airflow_base_url: str = "http://airflow-api-server:8080"
 

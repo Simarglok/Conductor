@@ -11,6 +11,7 @@ class GitConfigResponse(BaseModel):
     default_branch: str
     dbt_path: str
     dags_path: str
+    has_credentials: bool = False  # True if a token is configured (never exposed)
     created_at: datetime
     updated_at: datetime
 

@@ -3,13 +3,18 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.auth.deps import get_current_user
 from app.auth.permissions import require_super_admin
 from app.database import get_db_session
+from app.models.airflow_instance import AirflowInstance, AirflowInstanceStatus
+from app.models.project import Project
+from app.models.project_member import ProjectMember
 from app.models.role import Permission, Role
 from app.models.user import User
 from app.schemas.admin import (
+    AdminProjectResponse,
     PermissionCreateRequest,
     PermissionItem,
     RoleCreateRequest,
@@ -186,3 +191,31 @@ async def remove_permission(
         raise HTTPException(status_code=404, detail="Permission not found")
     await db.delete(perm)
     await db.commit()
+
+
+# ─── Projects ───
+
+
+@router.get("/admin/projects", response_model=list[AdminProjectResponse])
+async def list_admin_projects(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List all projects with member counts and Airflow status (super_admin only)."""
+    result = await db.execute(
+        select(Project).options(
+            selectinload(Project.airflow_instance),
+            selectinload(Project.members),
+        )
+    )
+    projects = result.scalars().all()
+    return [
+        AdminProjectResponse(
+            id=p.id,
+            name=p.name,
+            slug=p.slug,
+            member_count=len(p.members),
+            airflow_status=p.airflow_instance.status.value if p.airflow_instance else "not_provisioned",
+            created_at=p.created_at,
+        )
+        for p in projects
+    ]

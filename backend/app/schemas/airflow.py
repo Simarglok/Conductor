@@ -23,3 +23,12 @@ class AirflowProvisionResponse(BaseModel):
     admin_user: str
     dev_user: str
     viewer_user: str
+
+
+class AirflowStatsResponse(BaseModel):
+    active_dags: int
+    paused_dags: int
+    running: int
+    queued: int
+    runs_today: int
+    failed_24h: int

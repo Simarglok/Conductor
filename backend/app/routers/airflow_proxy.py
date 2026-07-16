@@ -13,65 +13,10 @@ from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.role import Role
 from app.models.user import User
+from app.services.airflow_role import resolve_airflow_account
+from app.services.airflow_session import AirflowSessionManager
 
 router = APIRouter()
-
-# Map Conductor roles to Airflow system account keys
-ROLE_ACCOUNT_MAP: dict[str, str] = {
-    "super_admin": "admin",
-    "project_admin": "admin",
-    "maintainer": "dev",
-    "developer": "dev",
-    "viewer": "viewer",
-}
-
-# Cache for Airflow sessions: {instance_id_role: session_cookie}
-_airflow_sessions: dict[str, str] = {}
-
-
-async def _get_airflow_session(instance: AirflowInstance, account_key: str) -> str:
-    """Get or create a session cookie for an Airflow system account."""
-    cache_key = f"{instance.id}_{account_key}"
-    if cache_key in _airflow_sessions:
-        return _airflow_sessions[cache_key]
-
-    # Map account_key to actual credentials
-    if account_key == "admin":
-        username = instance.admin_user
-        password = instance.admin_password_encrypted
-    elif account_key == "dev":
-        username = instance.dev_user
-        password = instance.dev_password_encrypted
-    else:
-        username = instance.viewer_user
-        password = instance.viewer_password_encrypted
-
-    if not password:
-        raise HTTPException(status_code=500, detail="Airflow credentials not configured")
-
-    # Login via Basic Auth
-    async with httpx.AsyncClient() as client:
-        login_resp = await client.post(
-            f"{instance.internal_url}/api/v1/login/",
-            data={"username": username, "password": password},
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        if login_resp.status_code != 200:
-            raise HTTPException(
-                status_code=502, detail="Failed to authenticate with Airflow"
-            )
-        session_cookie = login_resp.cookies.get("session")
-        if not session_cookie:
-            # Try to get it from the response
-            for cookie in login_resp.cookies.jar:
-                if cookie.name == "session":
-                    session_cookie = cookie.value
-                    break
-
-        if session_cookie:
-            _airflow_sessions[cache_key] = session_cookie
-
-        return session_cookie or ""
 
 
 async def _resolve_airflow(
@@ -116,7 +61,7 @@ async def _resolve_airflow(
             .options(selectinload(ProjectMember.role))
         )
         member = member_result.scalar_one_or_none()
-        account_key = ROLE_ACCOUNT_MAP.get(member.role.name if member else "viewer", "viewer")
+        account_key = resolve_airflow_account(member.role.name if member else "viewer")
 
     return instance, account_key
 
@@ -133,7 +78,8 @@ async def airflow_proxy(
     db: AsyncSession = Depends(get_db_session),
 ):
     instance, account_key = await _resolve_airflow(slug, user, db)
-    session = await _get_airflow_session(instance, account_key)
+    session_mgr = AirflowSessionManager()
+    session = await session_mgr.get_session(instance, account_key)
 
     # Forward request to Airflow
     target_url = f"{instance.internal_url}/{path}"
@@ -167,7 +113,8 @@ async def airflow_iframe(
 ):
     """Returns an HTML page that sets Airflow session cookie and redirects to iframe."""
     instance, account_key = await _resolve_airflow(slug, user, db)
-    session = await _get_airflow_session(instance, account_key)
+    session_mgr = AirflowSessionManager()
+    session = await session_mgr.get_session(instance, account_key)
 
     return Response(
         content=f"""<!DOCTYPE html>

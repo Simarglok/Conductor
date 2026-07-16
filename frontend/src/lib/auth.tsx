@@ -15,6 +15,7 @@ interface AuthState {
   register: (email: string, password: string, display_name: string) => Promise<void>;
   logout: () => void;
   isAuthenticated: boolean;
+  isAuthLoading: boolean;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -31,16 +32,25 @@ function getToken(): string | null {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(getToken());
+  const [token, setToken] = useState<string | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
 
+  // On mount: restore token and check /me
   useEffect(() => {
-    if (token) {
-      fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => r.ok ? r.json() : null)
-        .then(u => { if (u) setUser(u); else { setToken(null); localStorage.removeItem('conductor_token'); } })
-        .catch(() => { setToken(null); localStorage.removeItem('conductor_token'); });
+    const saved = getToken();
+    if (!saved) {
+      setIsAuthLoading(false);
+      return;
     }
-  }, [token]);
+    fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${saved}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(u => {
+        if (u) { setUser(u); setToken(saved); }
+        else { localStorage.removeItem('conductor_token'); }
+      })
+      .catch(() => { localStorage.removeItem('conductor_token'); })
+      .finally(() => setIsAuthLoading(false));
+  }, []);
 
   const login = async (email: string, password: string) => {
     const r = await fetch(`${API}/auth/login`, {
@@ -75,7 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, register, logout, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{ user, token, login, register, logout, isAuthenticated: !!user, isAuthLoading }}>
       {children}
     </AuthContext.Provider>
   );

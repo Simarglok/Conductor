@@ -20,13 +20,13 @@ x-airflow-env: &airflow-env
 
   # Database — overridden per project
   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
-    postgresql+psycopg2://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/change_me
+    postgresql+psycopg2://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/${CONDUCTOR_DB_NAME:-conductor}
 
   # Celery
   AIRFLOW__CELERY__BROKER_URL: >-
     redis://${CONDUCTOR_REDIS_HOST:-redis}:${CONDUCTOR_REDIS_PORT:-6379}/${CONDUCTOR_REDIS_DB:-0}
   AIRFLOW__CELERY__RESULT_BACKEND: >-
-    db+postgresql://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/change_me
+      db+postgresql://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/${CONDUCTOR_DB_NAME:-conductor}
 
   # API Server
   AIRFLOW__API__BASE_URL: http://localhost:8080
@@ -59,6 +59,35 @@ x-airflow-common: &airflow-common
     redis:
       condition: service_started
   restart: unless-stopped
+
+# ── Per-project Airflow environment overrides ──
+x-airflow-dw: &airflow-dw
+  <<: *airflow-env
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+    postgresql+psycopg2://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/airflow_dw
+  AIRFLOW__CELERY__BROKER_URL: >-
+    redis://${CONDUCTOR_REDIS_HOST:-redis}:${CONDUCTOR_REDIS_PORT:-6379}/3
+  AIRFLOW__CELERY__RESULT_BACKEND: >-
+    db+postgresql://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/airflow_dw
+  AIRFLOW__API__BASE_URL: http://localhost:8081
+  AIRFLOW__API__EXECUTION_API_SERVER_URL: http://airflow-dw-api-server:8080
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+  AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST: >-
+    [{"name":"local-dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags"}}]
+
+x-airflow-mktg: &airflow-mktg
+  <<: *airflow-env
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+    postgresql+psycopg2://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/airflow_mktg
+  AIRFLOW__CELERY__BROKER_URL: >-
+    redis://${CONDUCTOR_REDIS_HOST:-redis}:${CONDUCTOR_REDIS_PORT:-6379}/4
+  AIRFLOW__CELERY__RESULT_BACKEND: >-
+    db+postgresql://${CONDUCTOR_DB_USER:-conductor}:${CONDUCTOR_DB_PASSWORD:-conductor}@${CONDUCTOR_DB_HOST:-postgres}:${CONDUCTOR_DB_PORT:-5432}/airflow_mktg
+  AIRFLOW__API__BASE_URL: http://localhost:8082
+  AIRFLOW__API__EXECUTION_API_SERVER_URL: http://airflow-mktg-api-server:8080
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+  AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST: >-
+    [{"name":"local-dags","classpath":"airflow.dag_processing.bundles.local.LocalDagBundle","kwargs":{"path":"/opt/airflow/dags"}}]
 
 services:
 
@@ -109,6 +138,9 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/app:/app/app  # hot-reload
+      - ./backend/tests:/app/tests  # test files
+      - ./backend/pyproject.toml:/app/pyproject.toml  # for pytest config
+      - ./workspaces:/workspace  # shared with code-server
     depends_on:
       postgres:
         condition: service_healthy
@@ -172,6 +204,138 @@ services:
   airflow-worker:
     <<: *airflow-common
     command: airflow celery worker
+
+  # ─── Data Warehouse Airflow ───
+
+  airflow-dw-db-init:
+    <<: *airflow-common
+    restart: "no"
+    environment:
+      <<: *airflow-dw
+      _AIRFLOW_DB_MIGRATE: "true"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --password ${CONDUCTOR_AIRFLOW_ADMIN_PASSWORD:-admin} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@conductor.local &&
+        python3 /home/airflow/create_airflow_users.py data-warehouse
+    volumes:
+      - ./dags/data-warehouse:/opt/airflow/dags
+      - ./logs/data-warehouse:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+    profiles:
+      - init
+
+  airflow-dw-scheduler:
+    <<: *airflow-common
+    environment: *airflow-dw
+    command: airflow scheduler
+    volumes:
+      - ./dags/data-warehouse:/opt/airflow/dags
+      - ./logs/data-warehouse:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  airflow-dw-dag-processor:
+    <<: *airflow-common
+    environment: *airflow-dw
+    command: airflow dag-processor
+    volumes:
+      - ./dags/data-warehouse:/opt/airflow/dags
+      - ./logs/data-warehouse:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  airflow-dw-api-server:
+    <<: *airflow-common
+    environment: *airflow-dw
+    command: airflow api-server --apps all
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./dags/data-warehouse:/opt/airflow/dags
+      - ./logs/data-warehouse:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  airflow-dw-worker:
+    <<: *airflow-common
+    environment: *airflow-dw
+    command: airflow celery worker
+    volumes:
+      - ./dags/data-warehouse:/opt/airflow/dags
+      - ./logs/data-warehouse:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  # ─── Marketing Airflow ───
+
+  airflow-mktg-db-init:
+    <<: *airflow-common
+    restart: "no"
+    environment:
+      <<: *airflow-mktg
+      _AIRFLOW_DB_MIGRATE: "true"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --password ${CONDUCTOR_AIRFLOW_ADMIN_PASSWORD:-admin} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@conductor.local &&
+        python3 /home/airflow/create_airflow_users.py marketing
+    volumes:
+      - ./dags/marketing:/opt/airflow/dags
+      - ./logs/marketing:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+    profiles:
+      - init
+
+  airflow-mktg-scheduler:
+    <<: *airflow-common
+    environment: *airflow-mktg
+    command: airflow scheduler
+    volumes:
+      - ./dags/marketing:/opt/airflow/dags
+      - ./logs/marketing:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  airflow-mktg-dag-processor:
+    <<: *airflow-common
+    environment: *airflow-mktg
+    command: airflow dag-processor
+    volumes:
+      - ./dags/marketing:/opt/airflow/dags
+      - ./logs/marketing:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  airflow-mktg-api-server:
+    <<: *airflow-common
+    environment: *airflow-mktg
+    command: airflow api-server --apps all
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./dags/marketing:/opt/airflow/dags
+      - ./logs/marketing:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+
+  airflow-mktg-worker:
+    <<: *airflow-common
+    environment: *airflow-mktg
+    command: airflow celery worker
+    volumes:
+      - ./dags/marketing:/opt/airflow/dags
+      - ./logs/marketing:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
 
   # ─── code-server (multiuser, JWT auth) ───
   code-server:

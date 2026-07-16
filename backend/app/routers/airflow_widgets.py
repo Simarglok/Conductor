@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
@@ -13,7 +15,10 @@ from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.role import Role
 from app.models.user import User
+from app.routers.airflow_proxy import _resolve_airflow
+from app.schemas.airflow import AirflowStatsResponse
 from app.schemas.dag import DAGRunInfo, DAGSummary
+from app.services.airflow_session import AirflowSessionManager
 
 router = APIRouter()
 
@@ -157,3 +162,54 @@ document.cookie = "session={session}; path=/; SameSite=Lax";
 window.location.href = "{inst.internal_url}/{path}";
 </script></body></html>"""
     return Response(content=html, media_type="text/html")
+
+
+@router.get("/projects/{slug}/airflow/stats", response_model=AirflowStatsResponse)
+async def get_airflow_stats(
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Aggregate DAG statistics from Airflow REST API."""
+    instance, account_key = await _resolve_airflow(slug, user, db)
+    mgr = AirflowSessionManager()
+    session = await mgr.get_session(instance, account_key)
+
+    async with httpx.AsyncClient() as client:
+        cookies = {"session": session}
+        base = f"{instance.internal_url}/api/v1"
+
+        # Active / paused DAG counts
+        dags_resp = await client.get(f"{base}/dags", cookies=cookies)
+        dags_data = dags_resp.json() if dags_resp.status_code == 200 else {}
+        active = sum(1 for d in dags_data.get("dags", []) if not d.get("is_paused", False))
+        paused = sum(1 for d in dags_data.get("dags", []) if d.get("is_paused", False))
+
+        # Running count
+        running_resp = await client.get(f"{base}/dagRuns?state=running&limit=100", cookies=cookies)
+        running = running_resp.json().get("total_entries", 0) if running_resp.status_code == 200 else 0
+
+        # Queued count
+        queued_resp = await client.get(f"{base}/dagRuns?state=queued&limit=100", cookies=cookies)
+        queued = queued_resp.json().get("total_entries", 0) if queued_resp.status_code == 200 else 0
+
+        # Runs today
+        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        today_resp = await client.get(f"{base}/dagRuns?start_date_gte={today}&limit=200", cookies=cookies)
+        runs_today = today_resp.json().get("total_entries", 0) if today_resp.status_code == 200 else 0
+
+        # Failed last 24h
+        last_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        failed_resp = await client.get(
+            f"{base}/dagRuns?start_date_gte={last_24h}&state=failed&limit=100", cookies=cookies
+        )
+        failed_24h = failed_resp.json().get("total_entries", 0) if failed_resp.status_code == 200 else 0
+
+    return AirflowStatsResponse(
+        active_dags=active,
+        paused_dags=paused,
+        running=running,
+        queued=queued,
+        runs_today=runs_today,
+        failed_24h=failed_24h,
+    )

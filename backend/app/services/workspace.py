@@ -7,6 +7,7 @@ from pathlib import Path
 from app.models.git_config import GitConfig
 from app.models.project import Project
 from app.models.user import User
+from app.services.crypto import decrypt_token
 
 
 WORKSPACE_ROOT = Path("/workspace")
@@ -21,6 +22,9 @@ async def ensure_workspace(
     """
     user_dir = WORKSPACE_ROOT / user.id
     repo_dir = user_dir / "repo"
+
+    # Ensure user_dir exists before any git operations
+    user_dir.mkdir(parents=True, exist_ok=True)
 
     # Setup SSH if needed
     if git_config.auth_type == "ssh" and git_config.credentials_encrypted:

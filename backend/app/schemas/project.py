@@ -33,3 +33,4 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     member_count: int = 0
+    role: str | None = None  # Current user's role in this project

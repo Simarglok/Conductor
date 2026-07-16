@@ -24,3 +24,6 @@ class Project(Base):
     members: Mapped[list["ProjectMember"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    airflow_instance: Mapped["AirflowInstance | None"] = relationship(
+        "AirflowInstance", back_populates="project", uselist=False
+    )

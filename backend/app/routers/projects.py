@@ -31,6 +31,7 @@ from app.schemas.settings import (
     ProjectSettingsResponse,
     ProjectSettingsUpdateRequest,
 )
+from app.services.crypto import encrypt_token
 
 router = APIRouter()
 
@@ -66,7 +67,20 @@ async def list_projects(
     result = await db.execute(stmt)
     projects = result.scalars().all()
 
-    # Enrich with member count
+    # Batch-resolve roles for current user
+    member_map: dict[str, str] = {}
+    if projects and not user.is_admin:
+        members_result = await db.execute(
+            select(ProjectMember)
+            .where(
+                ProjectMember.user_id == user.id,
+                ProjectMember.project_id.in_([p.id for p in projects]),
+            )
+            .options(selectinload(ProjectMember.role))
+        )
+        for m in members_result.scalars():
+            member_map[m.project_id] = m.role.name if m.role else "member"
+
     response = []
     for p in projects:
         count_result = await db.execute(
@@ -75,6 +89,7 @@ async def list_projects(
             )
         )
         member_count = count_result.scalar() or 0
+        role = member_map.get(p.id) if not user.is_admin else "super_admin"
         response.append(
             ProjectResponse(
                 id=p.id,
@@ -85,6 +100,7 @@ async def list_projects(
                 created_at=p.created_at,
                 updated_at=p.updated_at,
                 member_count=member_count,
+                role=role,
             )
         )
     return response
@@ -157,6 +173,7 @@ async def create_project(
         created_at=project.created_at,
         updated_at=project.updated_at,
         member_count=1,
+        role="super_admin" if user.is_admin else "project_admin",
     )
 
 
@@ -180,6 +197,17 @@ async def get_project(
         )
     )
 
+    role = "super_admin" if user.is_admin else None
+    if not user.is_admin:
+        m_result = await db.execute(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project.id, ProjectMember.user_id == user.id,
+            ).options(selectinload(ProjectMember.role))
+        )
+        m = m_result.scalar_one_or_none()
+        if m:
+            role = m.role.name
+
     return ProjectResponse(
         id=project.id,
         name=project.name,
@@ -189,6 +217,7 @@ async def get_project(
         created_at=project.created_at,
         updated_at=project.updated_at,
         member_count=count_result.scalar() or 0,
+        role=role,
     )
 
 
@@ -229,6 +258,7 @@ async def update_project(
         created_at=project.created_at,
         updated_at=project.updated_at,
         member_count=count_result.scalar() or 0,
+        role="super_admin" if user.is_admin else "project_admin",
     )
 
 
@@ -500,6 +530,7 @@ async def get_git_config(
         default_branch=config.default_branch,
         dbt_path=config.dbt_path,
         dags_path=config.dags_path,
+        has_credentials=bool(config.credentials_encrypted),
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -534,9 +565,9 @@ async def update_git_config(
 
     # Handle encrypted fields
     if body.credentials is not None:
-        config.credentials_encrypted = body.credentials
+        config.credentials_encrypted = encrypt_token(body.credentials)
     if body.webhook_secret is not None:
-        config.webhook_secret_encrypted = body.webhook_secret
+        config.webhook_secret_encrypted = encrypt_token(body.webhook_secret)
 
     await db.commit()
     await db.refresh(config)
@@ -547,6 +578,7 @@ async def update_git_config(
         default_branch=config.default_branch,
         dbt_path=config.dbt_path,
         dags_path=config.dags_path,
+        has_credentials=bool(config.credentials_encrypted),
         created_at=config.created_at,
         updated_at=config.updated_at,
     )

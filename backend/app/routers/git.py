@@ -82,6 +82,29 @@ async def create_branch(
     return {"status": "created", "branch": name, "source": source}
 
 
+# ─── Commits ───
+
+
+@router.get("/projects/{slug}/git/commits", response_model=list[CommitResponse])
+async def list_commits(
+    slug: str,
+    branch: str = "HEAD",
+    limit: int = 50,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List commits for a branch.
+
+    Uses GitService when workspace repository is available.
+    Currently returns an empty list (stub).
+    """
+    proj, gc = await _resolve_project(slug, user, db)
+    if not gc:
+        raise HTTPException(400, "Git not configured")
+    # TODO: use GitService(workspace_path).list_commits(branch, limit)
+    return []
+
+
 # ─── Merge Requests ───
 
 

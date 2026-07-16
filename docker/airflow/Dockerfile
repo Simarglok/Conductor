@@ -14,3 +14,6 @@ USER airflow
 # ── dbt-core for Airflow worker ──
 RUN pip install --no-cache-dir \
     "dbt-core==2.0.0a4"
+
+# ── System user creation script ──
+COPY --chown=airflow:root create_airflow_users.py /home/airflow/

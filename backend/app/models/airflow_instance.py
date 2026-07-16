@@ -3,7 +3,7 @@ import enum
 from datetime import datetime
 from app.models.base import Base, new_uuid
 from sqlalchemy import Boolean, DateTime, Enum as SQLEnum, ForeignKey, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
 class AirflowInstanceStatus(str, enum.Enum):
@@ -20,6 +20,7 @@ class AirflowInstance(Base):
     project_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("projects.id", ondelete="CASCADE"), unique=True, nullable=False
     )
+    project: Mapped["Project"] = relationship("Project", back_populates="airflow_instance")
     internal_url: Mapped[str] = mapped_column(String(256), nullable=False)
     external_url: Mapped[str] = mapped_column(String(256), nullable=True)
     db_name: Mapped[str] = mapped_column(String(64), nullable=False)
