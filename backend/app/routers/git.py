@@ -21,6 +21,7 @@ from app.schemas.git import (
     MergeRequestCreate,
     MergeRequestResponse,
 )
+from app.services.crypto import decrypt_token
 from app.services.git_service import GitService, GitError
 
 router = APIRouter()
@@ -240,7 +241,7 @@ async def get_mr_checks(
         return []
 
     # Extract owner/repo from URL
-    url = gc.repo_url.rstrip(".git")
+    url = gc.repo_url.removesuffix(".git")
     parts = url.split("github.com/")
     if len(parts) < 2:
         return []
@@ -250,9 +251,9 @@ async def get_mr_checks(
     if not mr:
         raise HTTPException(404, "Merge request not found")
 
-    token = gc.credentials_encrypted
-    if not token:
+    if gc.auth_type != "token" or not gc.credentials_encrypted:
         return []
+    token = decrypt_token(gc.credentials_encrypted)
 
     async with httpx.AsyncClient() as client:
         resp = await client.get(

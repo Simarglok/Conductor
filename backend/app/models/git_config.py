@@ -13,12 +13,14 @@ class GitConfig(Base):
         String(32), ForeignKey("projects.id", ondelete="CASCADE"), unique=True, nullable=False
     )
     repo_url: Mapped[str] = mapped_column(String(512), nullable=False)
-    auth_type: Mapped[str] = mapped_column(String(16), nullable=False)  # "https" or "ssh"
-    credentials_encrypted: Mapped[str] = mapped_column(Text, nullable=True)
+    auth_type: Mapped[str] = mapped_column(
+        String(16), nullable=False
+    )  # "https", "token", or "ssh"
+    credentials_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     default_branch: Mapped[str] = mapped_column(String(128), default="main")
     dbt_path: Mapped[str] = mapped_column(String(256), default="dbt/")
     dags_path: Mapped[str] = mapped_column(String(256), default="dags/")
-    webhook_secret_encrypted: Mapped[str] = mapped_column(Text, nullable=True)
+    webhook_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -13,6 +13,9 @@ node_modules
 
 .DS_Store
 
-# Airflow runtime logs (generated inside containers)
+# Airflow/runtime artifacts generated inside containers or local tools
 logs/
+output/
+workspaces/
+.worktrees/
 .hermes/*

@@ -37,6 +37,7 @@ async def _engine():
 async def _init_db(_engine):
     from sqlalchemy import select
     async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     # Seed defaults
     async with async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)() as s:
@@ -47,9 +48,13 @@ async def _init_db(_engine):
             r = (await s.execute(select(Role).where(Role.name == name))).scalar_one_or_none()
             if not r:
                 s.add(Role(name=name, description=desc, is_system=True))
-        s.add(User(id="test-admin-001", email="admin@test.local",
-                   hashed_password=hash_password("admin"), display_name="Admin",
-                   is_active=True, is_admin=True))
+        admin = (
+            await s.execute(select(User).where(User.id == "test-admin-001"))
+        ).scalar_one_or_none()
+        if not admin:
+            s.add(User(id="test-admin-001", email="admin@test.local",
+                       hashed_password=hash_password("admin"), display_name="Admin",
+                       is_active=True, is_admin=True))
         await s.commit()
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, update
@@ -31,7 +32,7 @@ from app.schemas.settings import (
     ProjectSettingsResponse,
     ProjectSettingsUpdateRequest,
 )
-from app.services.crypto import encrypt_token
+from app.services.crypto import CredentialsEncryptionNotConfigured, encrypt_token
 
 router = APIRouter()
 
@@ -531,6 +532,7 @@ async def get_git_config(
         dbt_path=config.dbt_path,
         dags_path=config.dags_path,
         has_credentials=bool(config.credentials_encrypted),
+        has_token=config.auth_type == "token" and bool(config.credentials_encrypted),
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -558,16 +560,51 @@ async def update_git_config(
         db.add(config)
         await db.flush()
 
-    update_data = body.model_dump(exclude_unset=True, exclude={"credentials", "webhook_secret"})
+    previous_auth_type = config.auth_type
+    effective_auth_type = body.auth_type or previous_auth_type
+    credential = body.token if body.token is not None else body.credentials
+    if body.token is not None and effective_auth_type != "token":
+        raise HTTPException(status_code=422, detail="Token requires token authentication")
+    if body.credentials is not None and effective_auth_type not in ("token", "ssh"):
+        raise HTTPException(
+            status_code=422,
+            detail="Credentials require token or SSH authentication",
+        )
+    if effective_auth_type == "token" and previous_auth_type != "token" and credential is None:
+        raise HTTPException(
+            status_code=422,
+            detail="A token is required when enabling token authentication",
+        )
+
+    update_data = body.model_dump(
+        exclude_unset=True,
+        exclude={"token", "credentials", "webhook_secret"},
+    )
     if update_data:
         for key, value in update_data.items():
             setattr(config, key, value)
 
+    if config.auth_type == "token":
+        parsed_repo_url = urlsplit(config.repo_url)
+        if parsed_repo_url.scheme != "https" or not parsed_repo_url.netloc:
+            raise HTTPException(
+                status_code=422,
+                detail="Token authentication requires an HTTPS repository URL",
+            )
+
     # Handle encrypted fields
-    if body.credentials is not None:
-        config.credentials_encrypted = encrypt_token(body.credentials)
-    if body.webhook_secret is not None:
-        config.webhook_secret_encrypted = encrypt_token(body.webhook_secret)
+    try:
+        if credential is not None:
+            config.credentials_encrypted = encrypt_token(credential)
+        elif body.auth_type is not None and body.auth_type != previous_auth_type:
+            config.credentials_encrypted = None
+        if body.webhook_secret is not None:
+            config.webhook_secret_encrypted = encrypt_token(body.webhook_secret)
+    except CredentialsEncryptionNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if config.auth_type == "token" and not config.credentials_encrypted:
+        raise HTTPException(status_code=422, detail="Token authentication requires a token")
 
     await db.commit()
     await db.refresh(config)
@@ -579,6 +616,7 @@ async def update_git_config(
         dbt_path=config.dbt_path,
         dags_path=config.dags_path,
         has_credentials=bool(config.credentials_encrypted),
+        has_token=config.auth_type == "token" and bool(config.credentials_encrypted),
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
