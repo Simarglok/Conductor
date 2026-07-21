@@ -1,14 +1,17 @@
-/// <reference types="vitest" />
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-export default defineConfig({
+const config = {
   plugins: [react(), tailwindcss()],
   server: {
     port: 3000,
     proxy: {
-      '/api': 'http://fastapi:8000',
+      '/api': {
+        target: 'http://fastapi-proxy-target:8000',
+        xfwd: true,
+      },
     },
   },
   test: {
@@ -16,4 +19,6 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test-setup.ts'],
   },
-})
+}
+
+export default defineConfig(config)

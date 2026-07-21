@@ -31,7 +31,7 @@ async def ensure_workspace(
         ssh_dir = user_dir / ".ssh"
         ssh_dir.mkdir(parents=True, exist_ok=True)
         key_path = ssh_dir / "id_ed25519"
-        key_path.write_text(git_config.credentials_encrypted)
+        key_path.write_text(decrypt_token(git_config.credentials_encrypted))
         key_path.chmod(0o600)
 
         # Write SSH config
@@ -84,9 +84,21 @@ def _git_env(git_config: GitConfig, user_dir: Path) -> dict:
     env["GIT_SSH_COMMAND"] = f"ssh -i {user_dir}/.ssh/id_ed25519 -o StrictHostKeyChecking=no"
     env["HOME"] = str(user_dir)
     env["GIT_TERMINAL_PROMPT"] = "0"
-    if git_config.auth_type == "https" and git_config.credentials_encrypted:
-        # Use credentials in URL for HTTPS
-        pass  # Credentials are embedded in repo_url
+    if git_config.auth_type == "token" and git_config.credentials_encrypted:
+        # Keep the token out of the repository URL, git config, command line, and
+        # askpass script. It exists only in the environment of the git process.
+        askpass_path = user_dir / ".git-askpass"
+        askpass_path.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  *sername*) printf "%s\\n" "$CONDUCTOR_GIT_USERNAME" ;;\n'
+            '  *) printf "%s\\n" "$CONDUCTOR_GIT_TOKEN" ;;\n'
+            "esac\n"
+        )
+        askpass_path.chmod(0o700)
+        env["GIT_ASKPASS"] = str(askpass_path)
+        env["CONDUCTOR_GIT_USERNAME"] = "oauth2"
+        env["CONDUCTOR_GIT_TOKEN"] = decrypt_token(git_config.credentials_encrypted)
     return env
 
 

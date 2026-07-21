@@ -159,6 +159,72 @@ describe('SettingsPage', () => {
     expect(urlInput).toBeInTheDocument();
   });
 
+  it('sends a Git access token only when token auth is selected', async () => {
+    renderSettingsPage();
+    await waitFor(() => {
+      expect(screen.getByText('Edit Config')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Edit Config'));
+    fireEvent.change(screen.getByDisplayValue('HTTPS'), { target: { value: 'token' } });
+
+    const tokenInput = screen.getByLabelText('Access Token');
+    expect(tokenInput).toHaveAttribute('type', 'password');
+    fireEvent.change(tokenInput, { target: { value: 'github_pat_secret' } });
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => {
+      const putCall = (window.fetch as any).mock.calls.find(
+        ([url, options]: [string, RequestInit]) =>
+          url.includes('/projects/test-slug/git') && options?.method === 'PUT'
+      );
+      expect(putCall).toBeTruthy();
+      expect(JSON.parse(putCall[1].body)).toMatchObject({
+        auth_type: 'token',
+        token: 'github_pat_secret',
+      });
+    });
+  });
+
+  it.each([
+    ['https', 'HTTPS'],
+    ['ssh', 'SSH'],
+  ])('clears and omits a token when switching token auth to %s', async (authType, label) => {
+    renderSettingsPage();
+    await waitFor(() => {
+      expect(screen.getByText('Edit Config')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Edit Config'));
+    const authSelect = screen.getByDisplayValue('HTTPS');
+    fireEvent.change(authSelect, { target: { value: 'token' } });
+    fireEvent.change(screen.getByLabelText('Access Token'), {
+      target: { value: 'github_pat_must_be_cleared' },
+    });
+    fireEvent.change(authSelect, { target: { value: authType } });
+
+    expect(screen.queryByLabelText('Access Token')).not.toBeInTheDocument();
+
+    // Switching back proves the hidden credential state itself was cleared.
+    fireEvent.change(authSelect, { target: { value: 'token' } });
+    expect(screen.getByLabelText('Access Token')).toHaveValue('');
+    fireEvent.change(authSelect, { target: { value: authType } });
+    expect(authSelect).toHaveDisplayValue(label);
+
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => {
+      const putCall = (window.fetch as any).mock.calls.find(
+        ([url, options]: [string, RequestInit]) =>
+          url.includes('/projects/test-slug/git') && options?.method === 'PUT'
+      );
+      expect(putCall).toBeTruthy();
+      const requestBody = JSON.parse(putCall[1].body);
+      expect(requestBody.auth_type).toBe(authType);
+      expect(requestBody).not.toHaveProperty('token');
+    });
+  });
+
   it('switches to Environments tab and shows environment data', async () => {
     renderSettingsPage();
     await waitFor(() => {

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -12,13 +14,15 @@ from app.auth.permissions import require_super_admin
 from app.database import get_db_session
 from app.models.environment import Environment
 from app.models.git_config import GitConfig
-from app.models.project import Project
+from app.models.project import Project, ProjectLifecycleStatus
 from app.models.project_member import ProjectMember
 from app.models.role import Role
 from app.models.user import User
 from app.schemas.member import AddMemberRequest, ChangeRoleRequest, MemberResponse
 from app.schemas.project import (
     ProjectCreateRequest,
+    ProjectCreateResponse,
+    ProjectOperationResponse,
     ProjectResponse,
     ProjectUpdateRequest,
 )
@@ -31,7 +35,14 @@ from app.schemas.settings import (
     ProjectSettingsResponse,
     ProjectSettingsUpdateRequest,
 )
-from app.services.crypto import encrypt_token
+from app.services.crypto import CredentialsEncryptionNotConfigured, encrypt_token
+from app.services.project_access import load_ready_project_for_user
+from app.services.project_operations import (
+    DuplicateProjectSlugError,
+    IdempotencyKeyConflictError,
+    create_project_operation,
+)
+from app.services.secret_redaction import redact_secret_text
 
 router = APIRouter()
 
@@ -50,16 +61,15 @@ async def list_projects(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    if user.is_admin:
-        stmt = select(Project).order_by(Project.created_at.desc())
-    else:
-        # Only projects where user is a member
-        stmt = (
-            select(Project)
-            .join(ProjectMember, ProjectMember.project_id == Project.id)
-            .where(ProjectMember.user_id == user.id)
-            .order_by(Project.created_at.desc())
+    stmt = (
+        select(Project)
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .where(
+            ProjectMember.user_id == user.id,
+            Project.lifecycle_status == ProjectLifecycleStatus.READY,
         )
+        .order_by(Project.created_at.desc())
+    )
 
     if search:
         stmt = stmt.where(Project.name.ilike(f"%{search}%"))
@@ -97,6 +107,7 @@ async def list_projects(
                 slug=p.slug,
                 description=p.description,
                 self_approve_enabled=p.self_approve_enabled,
+                lifecycle_status=p.lifecycle_status,
                 created_at=p.created_at,
                 updated_at=p.updated_at,
                 member_count=member_count,
@@ -106,74 +117,61 @@ async def list_projects(
     return response
 
 
-@router.post("/projects", response_model=ProjectResponse, status_code=201)
+@router.post(
+    "/projects",
+    response_model=ProjectCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def create_project(
     body: ProjectCreateRequest,
+    idempotency_key: UUID = Header(alias="Idempotency-Key"),
     user: User = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
     slug = body.slug or _slugify(body.name)
-
-    # Check slug uniqueness
-    existing = await db.execute(select(Project).where(Project.slug == slug))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Project slug already exists")
-
-    project = Project(
-        name=body.name,
-        slug=slug,
-        description=body.description,
-    )
-    db.add(project)
-    await db.flush()
-
-    # Auto-create default environments
-    envs = [
-        Environment(
-            project_id=project.id,
-            name="production",
-            branch_name="main",
-            is_protected=True,
-            is_active=True,
-        ),
-        Environment(
-            project_id=project.id,
-            name="development",
-            branch_name="develop",
-            is_protected=False,
-            is_active=True,
-        ),
-    ]
-    for env in envs:
-        db.add(env)
-
-    # Auto-assign creator as project_admin
-    role_result = await db.execute(
-        select(Role).where(Role.name == "project_admin")
-    )
-    admin_role = role_result.scalar_one_or_none()
-
-    if admin_role:
-        member = ProjectMember(
-            project_id=project.id,
-            user_id=user.id,
-            role_id=admin_role.id,
+    try:
+        project, operation = await create_project_operation(
+            db,
+            name=body.name,
+            slug=slug,
+            description=body.description,
+            requested_by=user,
+            idempotency_key=str(idempotency_key),
         )
-        db.add(member)
+    except CredentialsEncryptionNotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=redact_secret_text(str(exc)),
+        ) from exc
+    except IdempotencyKeyConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency key already used with a different request",
+        ) from exc
+    except DuplicateProjectSlugError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project slug already exists",
+        ) from exc
 
-    await db.commit()
-    await db.refresh(project)
-
-    return ProjectResponse(
-        id=project.id,
-        name=project.name,
-        slug=project.slug,
-        description=project.description,
-        self_approve_enabled=project.self_approve_enabled,
-        created_at=project.created_at,
-        updated_at=project.updated_at,
-        member_count=1,
-        role="super_admin" if user.is_admin else "project_admin",
+    return ProjectCreateResponse(
+        project=ProjectResponse(
+            id=project.id,
+            name=project.name,
+            slug=project.slug,
+            description=project.description,
+            self_approve_enabled=project.self_approve_enabled,
+            lifecycle_status=project.lifecycle_status,
+            created_at=project.created_at,
+            updated_at=project.updated_at,
+            member_count=1,
+            role="super_admin",
+        ),
+        operation=ProjectOperationResponse(
+            id=operation.id,
+            operation=operation.operation,
+            status=operation.status,
+        ),
     )
 
 
@@ -183,10 +181,7 @@ async def get_project(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
 
     # Check access
     await _ensure_access(user, project.id, db)
@@ -214,6 +209,7 @@ async def get_project(
         slug=project.slug,
         description=project.description,
         self_approve_enabled=project.self_approve_enabled,
+        lifecycle_status=project.lifecycle_status,
         created_at=project.created_at,
         updated_at=project.updated_at,
         member_count=count_result.scalar() or 0,
@@ -228,10 +224,7 @@ async def update_project(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
 
     await _ensure_admin_access(user, project.id, db)
 
@@ -255,26 +248,12 @@ async def update_project(
         slug=project.slug,
         description=project.description,
         self_approve_enabled=project.self_approve_enabled,
+        lifecycle_status=project.lifecycle_status,
         created_at=project.created_at,
         updated_at=project.updated_at,
         member_count=count_result.scalar() or 0,
         role="super_admin" if user.is_admin else "project_admin",
     )
-
-
-@router.delete("/projects/{slug}", status_code=204)
-async def delete_project(
-    slug: str,
-    user: User = Depends(require_super_admin),
-    db: AsyncSession = Depends(get_db_session),
-):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    await db.delete(project)
-    await db.commit()
 
 
 # ─── Helpers ───
@@ -320,10 +299,7 @@ async def list_members(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
 
     await _ensure_access(user, project.id, db)
 
@@ -356,10 +332,7 @@ async def add_member(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
 
     await _ensure_admin_access(user, project.id, db)
 
@@ -416,10 +389,7 @@ async def change_member_role(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
 
     await _ensure_admin_access(user, project.id, db)
 
@@ -467,10 +437,7 @@ async def remove_member(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
 
     await _ensure_admin_access(user, project.id, db)
 
@@ -511,10 +478,7 @@ async def get_git_config(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
     await _ensure_access(user, project.id, db)
 
     git_result = await db.execute(
@@ -531,6 +495,7 @@ async def get_git_config(
         dbt_path=config.dbt_path,
         dags_path=config.dags_path,
         has_credentials=bool(config.credentials_encrypted),
+        has_token=config.auth_type == "token" and bool(config.credentials_encrypted),
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -543,10 +508,7 @@ async def update_git_config(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
     await _ensure_admin_access(user, project.id, db)
 
     git_result = await db.execute(
@@ -558,16 +520,54 @@ async def update_git_config(
         db.add(config)
         await db.flush()
 
-    update_data = body.model_dump(exclude_unset=True, exclude={"credentials", "webhook_secret"})
+    previous_auth_type = config.auth_type
+    effective_auth_type = body.auth_type or previous_auth_type
+    credential = body.token if body.token is not None else body.credentials
+    if body.token is not None and effective_auth_type != "token":
+        raise HTTPException(status_code=422, detail="Token requires token authentication")
+    if body.credentials is not None and effective_auth_type not in ("token", "ssh"):
+        raise HTTPException(
+            status_code=422,
+            detail="Credentials require token or SSH authentication",
+        )
+    if effective_auth_type == "token" and previous_auth_type != "token" and credential is None:
+        raise HTTPException(
+            status_code=422,
+            detail="A token is required when enabling token authentication",
+        )
+
+    update_data = body.model_dump(
+        exclude_unset=True,
+        exclude={"token", "credentials", "webhook_secret"},
+    )
     if update_data:
         for key, value in update_data.items():
             setattr(config, key, value)
 
+    if config.auth_type == "token":
+        parsed_repo_url = urlsplit(config.repo_url)
+        if parsed_repo_url.scheme != "https" or not parsed_repo_url.netloc:
+            raise HTTPException(
+                status_code=422,
+                detail="Token authentication requires an HTTPS repository URL",
+            )
+
     # Handle encrypted fields
-    if body.credentials is not None:
-        config.credentials_encrypted = encrypt_token(body.credentials)
-    if body.webhook_secret is not None:
-        config.webhook_secret_encrypted = encrypt_token(body.webhook_secret)
+    try:
+        if credential is not None:
+            config.credentials_encrypted = encrypt_token(credential)
+        elif body.auth_type is not None and body.auth_type != previous_auth_type:
+            config.credentials_encrypted = None
+        if body.webhook_secret is not None:
+            config.webhook_secret_encrypted = encrypt_token(body.webhook_secret)
+    except CredentialsEncryptionNotConfigured as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=redact_secret_text(str(exc)),
+        ) from exc
+
+    if config.auth_type == "token" and not config.credentials_encrypted:
+        raise HTTPException(status_code=422, detail="Token authentication requires a token")
 
     await db.commit()
     await db.refresh(config)
@@ -579,6 +579,7 @@ async def update_git_config(
         dbt_path=config.dbt_path,
         dags_path=config.dags_path,
         has_credentials=bool(config.credentials_encrypted),
+        has_token=config.auth_type == "token" and bool(config.credentials_encrypted),
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -590,10 +591,7 @@ async def list_environments(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
     await _ensure_access(user, project.id, db)
 
     env_result = await db.execute(
@@ -611,10 +609,7 @@ async def create_environment(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
     await _ensure_admin_access(user, project.id, db)
 
     env = Environment(
@@ -637,10 +632,7 @@ async def update_environment(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
     await _ensure_admin_access(user, project.id, db)
 
     env_result = await db.execute(
@@ -668,10 +660,7 @@ async def delete_environment(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
     await _ensure_admin_access(user, project.id, db)
 
     env_result = await db.execute(
@@ -692,10 +681,7 @@ async def get_settings(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
     await _ensure_access(user, project.id, db)
 
     return ProjectSettingsResponse(
@@ -710,10 +696,7 @@ async def update_settings(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
     await _ensure_admin_access(user, project.id, db)
 
     update_data = body.model_dump(exclude_unset=True)

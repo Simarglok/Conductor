@@ -21,21 +21,15 @@ from app.schemas.git import (
     MergeRequestCreate,
     MergeRequestResponse,
 )
+from app.services.crypto import decrypt_token
 from app.services.git_service import GitService, GitError
+from app.services.project_access import load_ready_project_for_user
 
 router = APIRouter()
 
 
 async def _resolve_project(slug: str, user: User, db: AsyncSession) -> tuple[Project, GitConfig | None]:
-    proj = (await db.execute(select(Project).where(Project.slug == slug))).scalar_one_or_none()
-    if not proj:
-        raise HTTPException(404, "Project not found")
-    if not user.is_admin:
-        member = (await db.execute(
-            select(ProjectMember).where(ProjectMember.project_id == proj.id, ProjectMember.user_id == user.id)
-        )).scalar_one_or_none()
-        if not member:
-            raise HTTPException(403, "Access denied")
+    proj = await load_ready_project_for_user(slug, user, db)
     gc = (await db.execute(select(GitConfig).where(GitConfig.project_id == proj.id))).scalar_one_or_none()
     return proj, gc
 
@@ -188,13 +182,20 @@ async def merge_mr(
     db: AsyncSession = Depends(get_db_session),
 ):
     proj, gc = await _resolve_project(slug, user, db)
+    mr = (
+        await db.execute(
+            select(MergeRequest).where(
+                MergeRequest.id == mr_id,
+                MergeRequest.project_id == proj.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not mr:
+        raise HTTPException(404, "Merge request not found")
+
     role = await _get_role(user, proj.id, db)
     if role not in ("super_admin", "project_admin", "maintainer"):
         raise HTTPException(403, "Insufficient permissions")
-
-    mr = (await db.execute(select(MergeRequest).where(MergeRequest.id == mr_id))).scalar_one_or_none()
-    if not mr:
-        raise HTTPException(404, "Merge request not found")
 
     # Check self-approval
     if mr.author_id == user.id and not proj.self_approve_enabled:
@@ -213,7 +214,14 @@ async def close_mr(
     db: AsyncSession = Depends(get_db_session),
 ):
     proj, _ = await _resolve_project(slug, user, db)
-    mr = (await db.execute(select(MergeRequest).where(MergeRequest.id == mr_id))).scalar_one_or_none()
+    mr = (
+        await db.execute(
+            select(MergeRequest).where(
+                MergeRequest.id == mr_id,
+                MergeRequest.project_id == proj.id,
+            )
+        )
+    ).scalar_one_or_none()
     if not mr:
         raise HTTPException(404, "Merge request not found")
     if mr.author_id != user.id:
@@ -236,23 +244,30 @@ async def get_mr_checks(
     db: AsyncSession = Depends(get_db_session),
 ):
     proj, gc = await _resolve_project(slug, user, db)
+    mr = (
+        await db.execute(
+            select(MergeRequest).where(
+                MergeRequest.id == mr_id,
+                MergeRequest.project_id == proj.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not mr:
+        raise HTTPException(404, "Merge request not found")
+
     if not gc or "github.com" not in gc.repo_url:
         return []
 
     # Extract owner/repo from URL
-    url = gc.repo_url.rstrip(".git")
+    url = gc.repo_url.removesuffix(".git")
     parts = url.split("github.com/")
     if len(parts) < 2:
         return []
     repo_path = parts[1]
 
-    mr = (await db.execute(select(MergeRequest).where(MergeRequest.id == mr_id))).scalar_one_or_none()
-    if not mr:
-        raise HTTPException(404, "Merge request not found")
-
-    token = gc.credentials_encrypted
-    if not token:
+    if gc.auth_type != "token" or not gc.credentials_encrypted:
         return []
+    token = decrypt_token(gc.credentials_encrypted)
 
     async with httpx.AsyncClient() as client:
         resp = await client.get(

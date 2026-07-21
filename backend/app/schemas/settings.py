@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class GitConfigResponse(BaseModel):
@@ -11,19 +13,49 @@ class GitConfigResponse(BaseModel):
     default_branch: str
     dbt_path: str
     dags_path: str
-    has_credentials: bool = False  # True if a token is configured (never exposed)
+    has_credentials: bool = False  # Backward-compatible generic secret indicator
+    has_token: bool = False
     created_at: datetime
     updated_at: datetime
 
 
 class GitConfigUpdateRequest(BaseModel):
     repo_url: str | None = None
-    auth_type: str | None = None
-    credentials: str | None = None
+    auth_type: Literal["https", "token", "ssh"] | None = None
+    token: str | None = None
+    credentials: str | None = None  # Backward compatibility for older clients/SSH
     default_branch: str | None = None
     dbt_path: str | None = None
     dags_path: str | None = None
     webhook_secret: str | None = None
+
+    @field_validator("repo_url", "auth_type")
+    @classmethod
+    def reject_null_for_non_nullable_fields(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("Field may be omitted, but it must not be null")
+        return value
+
+    @field_validator("repo_url")
+    @classmethod
+    def reject_credentials_in_repo_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("Repository URL must not contain embedded credentials")
+        return value
+
+    @field_validator("token", "credentials")
+    @classmethod
+    def reject_blank_credentials(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Credential must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def reject_ambiguous_credentials(self):
+        if self.token is not None and self.credentials is not None:
+            raise ValueError("Provide either token or credentials, not both")
+        return self
 
 
 class EnvironmentResponse(BaseModel):

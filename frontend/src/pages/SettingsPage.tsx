@@ -16,7 +16,14 @@ export default function SettingsPage() {
 
   // Git edit mode
   const [editingGit, setEditingGit] = useState(false);
-  const [formGit, setFormGit] = useState({ repo_url: '', auth_type: 'https', default_branch: 'main', dbt_path: '', dags_path: '' });
+  const [formGit, setFormGit] = useState({
+    repo_url: '',
+    auth_type: 'https',
+    token: '',
+    default_branch: 'main',
+    dbt_path: '',
+    dags_path: '',
+  });
 
   // Environment add form
   const [formEnv, setFormEnv] = useState({ name: '', branch_name: '', is_protected: false });
@@ -37,6 +44,7 @@ export default function SettingsPage() {
       setFormGit({
         repo_url: gitConfig.repo_url || '',
         auth_type: gitConfig.auth_type || 'https',
+        token: '',
         default_branch: gitConfig.default_branch || 'main',
         dbt_path: gitConfig.dbt_path || '',
         dags_path: gitConfig.dags_path || '',
@@ -54,10 +62,14 @@ export default function SettingsPage() {
 
   // Git save
   const handleGitSave = async () => {
-    await apiFetch(`/projects/${slug}/git`, {
-      method: 'PUT', body: JSON.stringify(formGit),
+    const { token, ...gitFields } = formGit;
+    const payload = formGit.auth_type === 'token' && token
+      ? { ...gitFields, token }
+      : gitFields;
+    const savedConfig = await apiFetch(`/projects/${slug}/git`, {
+      method: 'PUT', body: JSON.stringify(payload),
     });
-    setGitConfig({ ...formGit });
+    setGitConfig(savedConfig);
     setEditingGit(false);
   };
 
@@ -121,6 +133,12 @@ export default function SettingsPage() {
             <>
               <div className="flex justify-between py-1 text-sm"><span className="text-gray-400">URL</span><span className="text-[#818cf8] font-mono text-xs">{gitConfig.repo_url}</span></div>
               <div className="flex justify-between py-1 text-sm"><span className="text-gray-400">Auth Type</span><span className="text-gray-300">{gitConfig.auth_type}</span></div>
+              {gitConfig.auth_type === 'token' && (
+                <div className="flex justify-between py-1 text-sm">
+                  <span className="text-gray-400">Access Token</span>
+                  <span className="text-gray-300">{gitConfig.has_token || gitConfig.has_credentials ? 'Configured' : 'Not configured'}</span>
+                </div>
+              )}
               <div className="flex justify-between py-1 text-sm"><span className="text-gray-400">Branch</span><span className="text-gray-300">{gitConfig.default_branch}</span></div>
               <div className="flex justify-between py-1 text-sm"><span className="text-gray-400">dbt Path</span><span className="text-gray-300">{gitConfig.dbt_path}</span></div>
               <div className="flex justify-between py-1 text-sm"><span className="text-gray-400">DAGs Path</span><span className="text-gray-300">{gitConfig.dags_path}</span></div>
@@ -140,7 +158,14 @@ export default function SettingsPage() {
                 <label className="block text-sm text-gray-400 mb-1">Auth Type</label>
                 <select
                   value={formGit.auth_type}
-                  onChange={(e) => setFormGit({ ...formGit, auth_type: e.target.value })}
+                  onChange={(e) => {
+                    const authType = e.target.value;
+                    setFormGit({
+                      ...formGit,
+                      auth_type: authType,
+                      token: authType === 'token' ? formGit.token : '',
+                    });
+                  }}
                   className="w-full bg-[#0f1117] border border-[#2a2b36] rounded-md px-3 py-2 text-white text-sm focus:border-[#6366f1] outline-none"
                 >
                   <option value="https">HTTPS</option>
@@ -148,6 +173,21 @@ export default function SettingsPage() {
                   <option value="token">Token</option>
                 </select>
               </div>
+              {formGit.auth_type === 'token' && (
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1" htmlFor="git-access-token">Access Token</label>
+                  <input
+                    id="git-access-token"
+                    type="password"
+                    autoComplete="new-password"
+                    value={formGit.token}
+                    onChange={(e) => setFormGit({ ...formGit, token: e.target.value })}
+                    placeholder={gitConfig?.has_token ? 'Leave blank to keep the saved token' : 'Personal access token'}
+                    className="w-full bg-[#0f1117] border border-[#2a2b36] rounded-md px-3 py-2 text-white text-sm focus:border-[#6366f1] outline-none"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Stored encrypted and never returned by the API.</p>
+                </div>
+              )}
               <div>
                 <label className="block text-sm text-gray-400 mb-1">Default Branch</label>
                 <input
@@ -178,7 +218,8 @@ export default function SettingsPage() {
               <div className="flex gap-2 pt-1">
                 <button
                   onClick={handleGitSave}
-                  className="px-4 py-1.5 text-sm rounded-md bg-[#6366f1] text-white hover:bg-[#4f46e5] cursor-pointer"
+                  disabled={formGit.auth_type === 'token' && !formGit.token && !gitConfig?.has_token}
+                  className="px-4 py-1.5 text-sm rounded-md bg-[#6366f1] text-white hover:bg-[#4f46e5] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
                   Save
                 </button>

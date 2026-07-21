@@ -18,10 +18,15 @@ class Settings(BaseSettings):
 
     # ── Auth ──
     secret_key: str = "change-me-in-production"
+    credentials_encryption_key: str | None = None
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
     redis_refresh_prefix: str = "refresh_token:"
+    reauth_grant_ttl_seconds: int = 300
+    reauth_rate_limit_attempts: int = 5
+    reauth_rate_limit_window_seconds: int = 300
+    trusted_proxy_cidrs: str = "127.0.0.0/8,::1/128"
 
     # ── Seed admin ──
     admin_email: str = "admin@conductor.local"
@@ -30,6 +35,7 @@ class Settings(BaseSettings):
 
     # ── Airflow (will be wired later) ──
     airflow_base_url: str = "http://airflow-api-server:8080"
+    airflow_external_domain: str = "localhost"
 
     # ── Workspace (code-server) ──
     code_server_host: str = "http://code-server:8080"
