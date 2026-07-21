@@ -11,14 +11,13 @@ from app.auth.deps import get_current_user
 from app.auth.permissions import require_super_admin
 from app.database import get_db_session
 from app.models.airflow_instance import AirflowInstance, AirflowInstanceStatus
-from app.models.project import Project
 from app.models.project_member import ProjectMember
-from app.models.role import Role
 from app.models.user import User
 from app.schemas.airflow import (
     AirflowInstanceResponse,
     AirflowProvisionResponse,
 )
+from app.services.project_access import load_ready_project_for_user
 
 router = APIRouter()
 
@@ -37,10 +36,7 @@ async def provision_airflow(
     user: User = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
 
     # Check if already exists
     existing = await db.execute(
@@ -102,21 +98,7 @@ async def get_airflow_status(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    # Check access
-    if not user.is_admin:
-        result = await db.execute(
-            select(ProjectMember).where(
-                ProjectMember.project_id == project.id,
-                ProjectMember.user_id == user.id,
-            )
-        )
-        if not result.scalar_one_or_none():
-            raise HTTPException(status_code=403, detail="Access denied")
+    project = await load_ready_project_for_user(slug, user, db)
 
     inst_result = await db.execute(
         select(AirflowInstance).where(AirflowInstance.project_id == project.id)
@@ -143,10 +125,7 @@ async def restart_airflow(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
 
     # Check project admin
     if not user.is_admin:
@@ -191,10 +170,7 @@ async def delete_airflow(
     user: User = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
-    result = await db.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await load_ready_project_for_user(slug, user, db)
 
     inst_result = await db.execute(
         select(AirflowInstance).where(AirflowInstance.project_id == project.id)

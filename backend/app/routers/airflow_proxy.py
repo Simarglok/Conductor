@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -9,12 +9,11 @@ from sqlalchemy.orm import selectinload
 from app.auth.deps import get_current_user
 from app.database import get_db_session
 from app.models.airflow_instance import AirflowInstance
-from app.models.project import Project
 from app.models.project_member import ProjectMember
-from app.models.role import Role
 from app.models.user import User
 from app.services.airflow_role import resolve_airflow_account
 from app.services.airflow_session import AirflowSessionManager
+from app.services.project_access import load_ready_project_for_user
 
 router = APIRouter()
 
@@ -23,22 +22,7 @@ async def _resolve_airflow(
     slug: str, user: User, db: AsyncSession
 ) -> tuple[AirflowInstance, str]:
     """Resolve project, Airflow instance, and account key for a user."""
-    # Resolve project
-    proj_result = await db.execute(select(Project).where(Project.slug == slug))
-    project = proj_result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    # Check membership
-    if not user.is_admin:
-        member_result = await db.execute(
-            select(ProjectMember).where(
-                ProjectMember.project_id == project.id,
-                ProjectMember.user_id == user.id,
-            )
-        )
-        if not member_result.scalar_one_or_none():
-            raise HTTPException(status_code=403, detail="Access denied")
+    project = await load_ready_project_for_user(slug, user, db)
 
     # Get Airflow instance
     inst_result = await db.execute(

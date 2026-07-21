@@ -1,7 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timezone
+import hashlib
+import json
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -9,20 +15,30 @@ from app.auth.deps import get_current_user
 from app.auth.permissions import require_super_admin
 from app.database import get_db_session
 from app.models.airflow_instance import AirflowInstance, AirflowInstanceStatus
-from app.models.project import Project
+from app.models.audit_event import AuditEvent
+from app.models.project import Project, ProjectLifecycleStatus
+from app.models.project_lifecycle_job import (
+    LifecycleJobStatus,
+    LifecycleOperation,
+    ProjectLifecycleJob,
+)
 from app.models.project_member import ProjectMember
+from app.models.reauth_grant import ReauthGrant
 from app.models.role import Permission, Role
 from app.models.user import User
 from app.schemas.admin import (
     AdminProjectResponse,
     PermissionCreateRequest,
     PermissionItem,
+    ProjectDeleteOperationResponse,
+    ProjectDeleteRequest,
     RoleCreateRequest,
     RoleItem,
     RoleUpdateRequest,
     UserListItem,
     UserUpdateRequest,
 )
+from app.services.reauth import DELETE_ACTION, hash_reauth_token
 
 router = APIRouter(dependencies=[Depends(require_super_admin)])
 
@@ -219,3 +235,240 @@ async def list_admin_projects(
         )
         for p in projects
     ]
+
+
+_DELETE_INITIAL_STATES = {
+    ProjectLifecycleStatus.READY,
+    ProjectLifecycleStatus.PROVISION_FAILED,
+    ProjectLifecycleStatus.DELETION_FAILED,
+}
+_DELETE_MAX_ATTEMPTS = 5
+
+
+def _delete_fingerprint(
+    *,
+    actor_id: str,
+    project_id: str,
+    slug: str,
+    confirmation_slug: str,
+) -> str:
+    canonical = json.dumps(
+        {
+            "actor_id": actor_id,
+            "confirmation_slug": confirmation_slug,
+            "operation": "delete",
+            "project_id": project_id,
+            "slug": slug,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _delete_response(operation: ProjectLifecycleJob) -> ProjectDeleteOperationResponse:
+    return ProjectDeleteOperationResponse(
+        id=operation.id,
+        operation="delete",
+        status=operation.status.value,
+    )
+
+
+@router.delete(
+    "/admin/projects/{slug}",
+    response_model=ProjectDeleteOperationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_project_deletion(
+    slug: str,
+    body: ProjectDeleteRequest,
+    idempotency_key: UUID = Header(alias="Idempotency-Key"),
+    reauth_token: str | None = Header(default=None, alias="X-Reauth-Token"),
+    actor: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Consume a one-time grant and atomically enqueue durable teardown."""
+
+    key = str(idempotency_key)
+    try:
+        project = (
+            await db.execute(
+                select(Project).where(Project.slug == slug).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        fingerprint = _delete_fingerprint(
+            actor_id=actor.id,
+            project_id=project.id,
+            slug=slug,
+            confirmation_slug=body.confirmation_slug,
+        )
+        existing = (
+            await db.execute(
+                select(ProjectLifecycleJob).where(
+                    ProjectLifecycleJob.idempotency_key == key
+                )
+            )
+        ).scalar_one_or_none()
+
+        if (
+            existing is not None
+            and existing.project_id == project.id
+            and existing.operation is LifecycleOperation.DELETE
+            and existing.requested_by == actor.id
+            and existing.request_fingerprint == fingerprint
+        ):
+            response = _delete_response(existing)
+            await db.rollback()
+            return response
+
+        if project.lifecycle_status is ProjectLifecycleStatus.DELETING:
+            raise HTTPException(
+                status_code=409,
+                detail="Project deletion already has a different request",
+            )
+
+        if project.lifecycle_status not in _DELETE_INITIAL_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail="Project is not in a deletable state",
+            )
+        if body.confirmation_slug != slug:
+            raise HTTPException(
+                status_code=400,
+                detail="Project slug confirmation does not match",
+            )
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency key already used with a different request",
+            )
+        if not reauth_token:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid re-authentication grant",
+            )
+
+        failed_deletion_boundary = None
+        if project.lifecycle_status is ProjectLifecycleStatus.DELETION_FAILED:
+            latest_failed_delete = (
+                await db.execute(
+                    select(ProjectLifecycleJob)
+                    .where(
+                        ProjectLifecycleJob.project_id == project.id,
+                        ProjectLifecycleJob.operation == LifecycleOperation.DELETE,
+                        ProjectLifecycleJob.status == LifecycleJobStatus.FAILED,
+                    )
+                    .order_by(ProjectLifecycleJob.created_at.desc())
+                    .limit(1)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            failed_deletion_boundary = (
+                latest_failed_delete.finished_at
+                if latest_failed_delete is not None
+                and latest_failed_delete.finished_at is not None
+                else project.updated_at
+            )
+
+        grant = (
+            await db.execute(
+                select(ReauthGrant)
+                .where(ReauthGrant.token_hash == hash_reauth_token(reauth_token))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+        if (
+            grant is None
+            or grant.user_id != actor.id
+            or grant.action != DELETE_ACTION
+            or grant.project_id != project.id
+            or grant.consumed_at is not None
+            or grant.expires_at <= now
+            or (
+                project.lifecycle_status is ProjectLifecycleStatus.DELETION_FAILED
+                and (
+                    failed_deletion_boundary is None
+                    or grant.created_at is None
+                    or grant.created_at <= failed_deletion_boundary
+                )
+            )
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid re-authentication grant",
+            )
+
+        correlation_id = uuid4().hex
+        operation = ProjectLifecycleJob(
+            project_id=project.id,
+            operation=LifecycleOperation.DELETE,
+            status=LifecycleJobStatus.PENDING,
+            attempt=0,
+            max_attempts=_DELETE_MAX_ATTEMPTS,
+            available_at=now,
+            idempotency_key=key,
+            request_fingerprint=fingerprint,
+            requested_by=actor.id,
+            correlation_id=correlation_id,
+        )
+        grant.consumed_at = now
+        project.lifecycle_status = ProjectLifecycleStatus.DELETING
+        db.add(operation)
+        await db.flush()
+        db.add(
+            AuditEvent(
+                event_type="project.delete.requested",
+                actor_user_id=actor.id,
+                project_id_snapshot=project.id,
+                project_name_snapshot=project.name,
+                project_slug_snapshot=project.slug,
+                correlation_id=correlation_id,
+                outcome="requested",
+                metadata_json={"operation_id": operation.id},
+            )
+        )
+        await db.commit()
+        return _delete_response(operation)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except IntegrityError:
+        await db.rollback()
+        replay = (
+            await db.execute(
+                select(ProjectLifecycleJob).where(
+                    ProjectLifecycleJob.idempotency_key == key
+                )
+            )
+        ).scalar_one_or_none()
+        if replay is not None:
+            if (
+                replay.operation is LifecycleOperation.DELETE
+                and replay.requested_by == actor.id
+                and replay.request_fingerprint
+                == _delete_fingerprint(
+                    actor_id=actor.id,
+                    project_id=replay.project_id,
+                    slug=slug,
+                    confirmation_slug=body.confirmation_slug,
+                )
+            ):
+                return _delete_response(replay)
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency key already used with a different request",
+            ) from None
+        raise HTTPException(
+            status_code=500,
+            detail="Project deletion request failed",
+        ) from None
+    except Exception:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Project deletion request failed",
+        ) from None

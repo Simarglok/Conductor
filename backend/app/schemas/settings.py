@@ -29,11 +29,16 @@ class GitConfigUpdateRequest(BaseModel):
     dags_path: str | None = None
     webhook_secret: str | None = None
 
+    @field_validator("repo_url", "auth_type")
+    @classmethod
+    def reject_null_for_non_nullable_fields(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("Field may be omitted, but it must not be null")
+        return value
+
     @field_validator("repo_url")
     @classmethod
-    def reject_credentials_in_repo_url(cls, value: str | None) -> str | None:
-        if value is None:
-            return value
+    def reject_credentials_in_repo_url(cls, value: str) -> str:
         parsed = urlsplit(value)
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("Repository URL must not contain embedded credentials")

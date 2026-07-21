@@ -25,6 +25,17 @@ class TokenRefreshRequest(BaseModel):
     refresh_token: str
 
 
+class ReauthRequest(BaseModel):
+    password: str
+    action: str
+    project_id: str
+
+
+class ReauthResponse(BaseModel):
+    token: str
+    expires_in: int
+
+
 class UserProjectInfo(BaseModel):
     project_id: str
     slug: str

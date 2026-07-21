@@ -30,12 +30,39 @@ cd Conductor
 ### 2. Start the stack
 
 ```bash
+# One-time setup: create the credentials-encryption key in the root .env only
+# when it is not already configured. This command never prints the key.
+umask 077
+touch .env
+chmod 600 .env
+if ! grep -q '^CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY=' .env; then
+  python3 - <<'PY'
+import base64
+import secrets
+from pathlib import Path
+
+key = base64.urlsafe_b64encode(secrets.token_bytes(32))
+with Path(".env").open("a+b") as env_file:
+    env_file.seek(0, 2)
+    separator = b""
+    if env_file.tell():
+        env_file.seek(-1, 2)
+        separator = b"" if env_file.read(1) == b"\n" else b"\n"
+    env_file.seek(0, 2)
+    env_file.write(separator + b"CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY=" + key + b"\n")
+PY
+fi
+
 # Initialize Airflow database + create admin user (one-time)
 docker compose --profile init up airflow-db-init
 
 # Start all services
 docker compose up -d
 ```
+
+Docker Compose automatically loads the root `.env` file. Keep this encryption key
+stable: backups and restores must preserve the same `.env` value, or previously
+stored Git credentials will no longer be decryptable.
 
 ### 3. Access services
 
