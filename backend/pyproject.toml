@@ -39,6 +39,10 @@ minversion = "8"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests requiring real external services",
+]
 
 [build-system]
 requires = ["setuptools"]
