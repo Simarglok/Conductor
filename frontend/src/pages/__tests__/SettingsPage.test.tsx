@@ -159,6 +159,33 @@ describe('SettingsPage', () => {
     expect(urlInput).toBeInTheDocument();
   });
 
+  it('sends a Git access token only when token auth is selected', async () => {
+    renderSettingsPage();
+    await waitFor(() => {
+      expect(screen.getByText('Edit Config')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Edit Config'));
+    fireEvent.change(screen.getByDisplayValue('HTTPS'), { target: { value: 'token' } });
+
+    const tokenInput = screen.getByLabelText('Access Token');
+    expect(tokenInput).toHaveAttribute('type', 'password');
+    fireEvent.change(tokenInput, { target: { value: 'github_pat_secret' } });
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => {
+      const putCall = (window.fetch as any).mock.calls.find(
+        ([url, options]: [string, RequestInit]) =>
+          url.includes('/projects/test-slug/git') && options?.method === 'PUT'
+      );
+      expect(putCall).toBeTruthy();
+      expect(JSON.parse(putCall[1].body)).toMatchObject({
+        auth_type: 'token',
+        token: 'github_pat_secret',
+      });
+    });
+  });
+
   it('switches to Environments tab and shows environment data', async () => {
     renderSettingsPage();
     await waitFor(() => {
