@@ -5,6 +5,9 @@ import re
 
 from pydantic import BaseModel, field_validator
 
+from app.models.project import ProjectLifecycleStatus
+from app.models.project_lifecycle_job import LifecycleJobStatus, LifecycleOperation
+
 
 class ProjectCreateRequest(BaseModel):
     name: str
@@ -30,7 +33,19 @@ class ProjectResponse(BaseModel):
     slug: str
     description: str | None
     self_approve_enabled: bool
+    lifecycle_status: ProjectLifecycleStatus
     created_at: datetime
     updated_at: datetime
     member_count: int = 0
     role: str | None = None  # Current user's role in this project
+
+
+class ProjectOperationResponse(BaseModel):
+    id: str
+    operation: LifecycleOperation
+    status: LifecycleJobStatus
+
+
+class ProjectCreateResponse(BaseModel):
+    project: ProjectResponse
+    operation: ProjectOperationResponse

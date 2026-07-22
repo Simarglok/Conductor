@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.models.git_config import GitConfig
-from app.models.project import Project
+from app.models.project import Project, ProjectLifecycleStatus
 from app.services.crypto import (
     CredentialsEncryptionNotConfigured,
     decrypt_token,
@@ -24,14 +24,27 @@ def configure_credentials_encryption_key(monkeypatch):
     )
 
 
+async def _mark_project_ready(db_session: AsyncSession, project_id: str) -> None:
+    project = await db_session.get(Project, project_id)
+    assert project is not None
+    project.lifecycle_status = ProjectLifecycleStatus.READY
+    await db_session.commit()
+
+
 @pytest.mark.asyncio
-async def test_git_token_is_encrypted_and_never_returned(admin_client, _engine):
+async def test_git_token_is_encrypted_and_never_returned(
+    admin_client,
+    _engine,
+    db_session,
+):
     slug = f"git-token-{uuid4().hex[:8]}"
     create_response = await admin_client.post(
         "/api/v1/projects",
         json={"name": "Git token project", "slug": slug},
+        headers={"Idempotency-Key": str(uuid4())},
     )
-    assert create_response.status_code == 201, create_response.text
+    assert create_response.status_code == 202, create_response.text
+    await _mark_project_ready(db_session, create_response.json()["project"]["id"])
 
     plaintext_token = "glpat-super-secret-token"
     update_response = await admin_client.put(
@@ -87,13 +100,68 @@ async def test_git_token_is_encrypted_and_never_returned(admin_client, _engine):
 
 
 @pytest.mark.asyncio
-async def test_git_config_rejects_credentials_embedded_in_url(admin_client):
+@pytest.mark.parametrize("field", ["repo_url", "auth_type"])
+async def test_git_config_rejects_explicit_null_for_non_nullable_fields(
+    admin_client, field
+):
+    response = await admin_client.put(
+        "/api/v1/projects/validation-must-run-before-lookup/git",
+        json={field: None},
+    )
+
+    assert response.status_code == 422, response.text
+    assert any(
+        error["loc"][-1] == field for error in response.json()["detail"]
+    ), response.text
+
+
+@pytest.mark.asyncio
+async def test_git_config_omitted_fields_preserve_existing_values(
+    admin_client,
+    db_session,
+):
+    slug = f"git-partial-{uuid4().hex[:8]}"
+    create_response = await admin_client.post(
+        "/api/v1/projects",
+        json={"name": "Partial Git update", "slug": slug},
+        headers={"Idempotency-Key": str(uuid4())},
+    )
+    assert create_response.status_code == 202, create_response.text
+    await _mark_project_ready(db_session, create_response.json()["project"]["id"])
+
+    initial_response = await admin_client.put(
+        f"/api/v1/projects/{slug}/git",
+        json={
+            "repo_url": "https://github.com/org/repo.git",
+            "auth_type": "https",
+        },
+    )
+    assert initial_response.status_code == 200, initial_response.text
+
+    response = await admin_client.put(
+        f"/api/v1/projects/{slug}/git",
+        json={"default_branch": "develop"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["repo_url"] == "https://github.com/org/repo.git"
+    assert response.json()["auth_type"] == "https"
+    assert response.json()["default_branch"] == "develop"
+
+
+@pytest.mark.asyncio
+async def test_git_config_rejects_credentials_embedded_in_url(
+    admin_client,
+    db_session,
+):
     slug = f"git-url-{uuid4().hex[:8]}"
     create_response = await admin_client.post(
         "/api/v1/projects",
         json={"name": "Unsafe URL project", "slug": slug},
+        headers={"Idempotency-Key": str(uuid4())},
     )
-    assert create_response.status_code == 201, create_response.text
+    assert create_response.status_code == 202, create_response.text
+    await _mark_project_ready(db_session, create_response.json()["project"]["id"])
 
     missing_token_response = await admin_client.put(
         f"/api/v1/projects/{slug}/git",
@@ -192,13 +260,19 @@ def test_encryption_fails_closed_without_dedicated_key(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_git_config_returns_503_without_dedicated_key(admin_client, monkeypatch):
+async def test_git_config_returns_503_without_dedicated_key(
+    admin_client,
+    monkeypatch,
+    db_session,
+):
     slug = f"git-key-{uuid4().hex[:8]}"
     create_response = await admin_client.post(
         "/api/v1/projects",
         json={"name": "Missing encryption key", "slug": slug},
+        headers={"Idempotency-Key": str(uuid4())},
     )
-    assert create_response.status_code == 201, create_response.text
+    assert create_response.status_code == 202, create_response.text
+    await _mark_project_ready(db_session, create_response.json()["project"]["id"])
     monkeypatch.setattr(settings, "credentials_encryption_key", None)
 
     response = await admin_client.put(

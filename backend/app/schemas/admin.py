@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -58,3 +59,13 @@ class AdminProjectResponse(BaseModel):
     member_count: int
     airflow_status: str
     created_at: datetime
+
+
+class ProjectDeleteRequest(BaseModel):
+    confirmation_slug: str
+
+
+class ProjectDeleteOperationResponse(BaseModel):
+    id: str
+    operation: Literal["delete"]
+    status: str

@@ -62,7 +62,10 @@ export default function SettingsPage() {
 
   // Git save
   const handleGitSave = async () => {
-    const payload = { ...formGit, token: formGit.token || undefined };
+    const { token, ...gitFields } = formGit;
+    const payload = formGit.auth_type === 'token' && token
+      ? { ...gitFields, token }
+      : gitFields;
     const savedConfig = await apiFetch(`/projects/${slug}/git`, {
       method: 'PUT', body: JSON.stringify(payload),
     });
@@ -155,7 +158,14 @@ export default function SettingsPage() {
                 <label className="block text-sm text-gray-400 mb-1">Auth Type</label>
                 <select
                   value={formGit.auth_type}
-                  onChange={(e) => setFormGit({ ...formGit, auth_type: e.target.value })}
+                  onChange={(e) => {
+                    const authType = e.target.value;
+                    setFormGit({
+                      ...formGit,
+                      auth_type: authType,
+                      token: authType === 'token' ? formGit.token : '',
+                    });
+                  }}
                   className="w-full bg-[#0f1117] border border-[#2a2b36] rounded-md px-3 py-2 text-white text-sm focus:border-[#6366f1] outline-none"
                 >
                   <option value="https">HTTPS</option>

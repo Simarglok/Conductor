@@ -11,14 +11,13 @@ from sqlalchemy.orm import selectinload
 from app.auth.deps import get_current_user
 from app.database import get_db_session
 from app.models.airflow_instance import AirflowInstance
-from app.models.project import Project
 from app.models.project_member import ProjectMember
-from app.models.role import Role
 from app.models.user import User
 from app.routers.airflow_proxy import _resolve_airflow
 from app.schemas.airflow import AirflowStatsResponse
 from app.schemas.dag import DAGRunInfo, DAGSummary
 from app.services.airflow_session import AirflowSessionManager
+from app.services.project_access import load_ready_project_for_user
 
 router = APIRouter()
 
@@ -66,15 +65,7 @@ async def _get_session(instance: AirflowInstance, account_key: str) -> str:
 
 
 async def _get_airflow(project_slug: str, user: User, db: AsyncSession) -> tuple[AirflowInstance, str]:
-    proj = (await db.execute(select(Project).where(Project.slug == project_slug))).scalar_one_or_none()
-    if not proj:
-        raise HTTPException(404, "Project not found")
-    if not user.is_admin:
-        member = (await db.execute(
-            select(ProjectMember).where(ProjectMember.project_id == proj.id, ProjectMember.user_id == user.id)
-        )).scalar_one_or_none()
-        if not member:
-            raise HTTPException(403, "Access denied")
+    proj = await load_ready_project_for_user(project_slug, user, db)
     inst = (await db.execute(select(AirflowInstance).where(AirflowInstance.project_id == proj.id))).scalar_one_or_none()
     if not inst:
         raise HTTPException(404, "Airflow not provisioned")
