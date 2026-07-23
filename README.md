@@ -1,8 +1,6 @@
 # Conductor
 
-**Conductor** is an open-source workspace for building and operating data transformations. It brings together dbt Core, Apache Airflow, a FastAPI control plane, and a browser-based VS Code environment behind a project-aware React dashboard.
-
-> **Status:** active development. The repository provides a complete local development stack; some project-runtime integrations are still being expanded. See [Current capabilities](#current-capabilities) for the supported scope.
+**Conductor** is an open-source foundation for building and operating data transformations. It combines dbt Core, Apache Airflow, a FastAPI control plane, and a React dashboard. The repository is in active development: the supported local path starts the control plane and one base Airflow environment, while the project-runtime workflow is not yet wired end to end.
 
 ## Stack
 
@@ -16,19 +14,23 @@
 | Data store | PostgreSQL 18 |
 | Cache and broker | Redis 8.6.4 |
 
-## Current capabilities
+## Current implementation status
 
-- JWT authentication with access-token refresh and a seeded local super-admin account.
-- Project creation, memberships, role-based access, environments, and project settings.
-- Encrypted storage for configured Git credentials; tokens are never returned by the API.
-- A durable project lifecycle queue and worker.
-- Airflow project widgets, proxy endpoints, and local Airflow services for the base, data-warehouse, and marketing examples.
-- A React dashboard for projects, pipeline views, development workspaces, Git merge-request records, settings, and administration.
-- Per-user code-server JWTs issued by the control plane.
+- JWT authentication, refresh tokens, and a seeded local super-admin account are implemented.
+- The API has project, membership, environment, Git configuration, Airflow, workspace, and administration endpoints.
+- Configured Git credentials are encrypted at rest and never returned by the API.
+- The dashboard provides routes and views for projects, pipeline data, development, Git, settings, and administration.
+- The base Airflow environment can be initialised and started locally.
 
-The Git branch/commit views and automatic provisioning of arbitrary project runtimes are still under development. The checked-in Docker Compose stack exposes the three local Airflow environments described below.
+The following pieces are present in the codebase but are **not a working local project workflow** yet:
 
-## Quick start
+- The project-creation UI does not send the API's required `Idempotency-Key` header.
+- Project creation queues a provisioning job, but Docker Compose does not run a lifecycle worker and the default runner registry is intentionally empty. A project therefore remains in `PROVISIONING`.
+- The data-warehouse and marketing Airflow definitions expect PostgreSQL databases that the checked-in Compose flow does not create.
+- The code-server endpoint returns the Docker-internal URL `http://code-server:8080`, so the dashboard cannot open the published `localhost:8443` port in a host browser.
+- Git branch and commit views currently return placeholder data.
+
+## Quick start: supported local services
 
 ### Prerequisites
 
@@ -47,7 +49,7 @@ cd Conductor
 
 The root `.env` is required by Docker Compose. It holds deployment-level settings, including a stable secret used to derive the Fernet key for stored credentials. It is gitignored and must never be committed.
 
-Create a stable encryption key without printing it to the terminal:
+Create a stable credentials-encryption value without printing it to the terminal:
 
 ```bash
 umask 077
@@ -78,7 +80,7 @@ fi
 chmod 600 backend/.env
 ```
 
-For a shared or non-local deployment, also set strong values in the root `.env` before starting the stack:
+For a shared or non-local deployment, set strong values in the root `.env` before starting the stack:
 
 ```dotenv
 CONDUCTOR_JWT_SECRET=replace-with-a-long-random-value
@@ -89,48 +91,46 @@ CONDUCTOR_DB_PASSWORD=replace-with-a-strong-password
 
 Keep `CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY` unchanged for the lifetime of the data. Rotating or losing it makes previously encrypted Git credentials unreadable. The application-specific variables and defaults are documented in [`backend/.env.example`](backend/.env.example).
 
-### 3. Initialise Airflow databases
+### 3. Initialise the base Airflow database
 
-Run this once for a new Docker volume. It migrates the base, data-warehouse, and marketing Airflow metadata databases and creates their local admin users:
+Run this once for a new Docker volume. It migrates the base Airflow metadata database and creates its local admin user:
 
 ```bash
-docker compose --profile init up \
-  airflow-db-init \
-  airflow-dw-db-init \
-  airflow-mktg-db-init
+docker compose --profile init up airflow-db-init
 ```
 
-### 4. Start the development stack
+### 4. Start the supported local services
+
+Start the control plane, dashboard, base Airflow, and their dependencies explicitly. Do not start the data-warehouse or marketing Airflow services until their database provisioning is wired into Compose.
 
 ```bash
-docker compose up -d
+docker compose up -d \
+  postgres redis fastapi frontend \
+  airflow-api-server airflow-scheduler airflow-dag-processor airflow-worker
+
 docker compose ps
 ```
 
-### 5. Open Conductor
+### 5. Access local services
 
 | Service | URL | Local development access |
 | --- | --- | --- |
-| Conductor dashboard | <http://localhost:3000> | Sign in with the seeded `admin@conductor.local` / `admin` account, or register a user |
+| Conductor dashboard | <http://localhost:3000> | Sign in with the seeded `admin@conductor.local` / `admin`, or register a user |
 | Conductor API | <http://localhost:8000/docs> | OpenAPI / Swagger UI |
 | API health check | <http://localhost:8000/api/v1/health> | Reports PostgreSQL and Redis connectivity |
 | Base Airflow | <http://localhost:8080> | `admin` / `CONDUCTOR_AIRFLOW_ADMIN_PASSWORD` (defaults to `admin`) |
-| Data-warehouse Airflow | <http://localhost:8081> | Same local Airflow admin credentials |
-| Marketing Airflow | <http://localhost:8082> | Same local Airflow admin credentials |
-| code-server | <http://localhost:8443> | JWT access is issued through a project's **Development** view; there is no static password |
 | PostgreSQL | `localhost:5432` | `CONDUCTOR_DB_USER` / `CONDUCTOR_DB_PASSWORD` (both default to `conductor`) |
 | Redis | `localhost:6379` | Local development port |
 
 The supplied credentials are development defaults only. Change them before exposing any service outside your machine.
 
-## Using the dashboard
+## Dashboard and API limitations
 
-1. Sign in with the seeded super-admin account or register a new account.
-2. Create a project from **Projects** (project creation requires the super-admin role).
-3. Configure repository, environment, and membership settings in the project **Settings** view.
-4. Use **Pipeline** to inspect the configured Airflow views and **Development** to open a short-lived JWT-authenticated code-server workspace.
+The dashboard is useful for exercising authentication and inspecting the in-progress UI, but project provisioning, Pipeline, and Development are not currently usable as an end-to-end local workflow.
 
-Default project roles, from broadest to narrowest access, are `super_admin`, `project_admin`, `maintainer`, `developer`, and `viewer`.
+If you call `POST /api/v1/projects` directly, it requires a super-admin bearer token and an `Idempotency-Key` UUID header. It returns an accepted provisioning operation, not a ready project, because no lifecycle runner is configured. The Swagger UI at <http://localhost:8000/docs> is the authoritative reference for the implemented API contracts.
+
+The Compose file defines additional data-warehouse and marketing Airflow services on ports `8081` and `8082`, plus code-server on `8443`. They are not part of the supported quick-start path described above. See [Current implementation status](#current-implementation-status) for the present blockers.
 
 ## Architecture
 
@@ -139,17 +139,14 @@ Browser
   │
   ├── React dashboard :3000 ───────────────┐
   │                                         │
-  └── code-server :8443 (project JWT)       │
-                                            ▼
+  └─────────────────────────────────────────▼
                                   FastAPI control plane :8000
                                   ├── PostgreSQL :5432
                                   ├── Redis :6379
-                                  ├── Airflow base :8080
-                                  ├── Airflow data warehouse :8081
-                                  └── Airflow marketing :8082
+                                  └── Base Airflow :8080
 ```
 
-The frontend proxies `/api` requests to FastAPI inside Docker. FastAPI owns authentication, authorization, project metadata, credential encryption, and integration-facing API endpoints. Airflow runs with the CeleryExecutor; PostgreSQL stores its metadata and Redis serves as its broker.
+The frontend proxies `/api` requests to FastAPI inside Docker. FastAPI owns authentication, authorization, project metadata, credential encryption, and integration-facing API endpoints. The base Airflow environment runs with the CeleryExecutor; PostgreSQL stores its metadata and Redis serves as its broker.
 
 ## Repository layout
 
@@ -171,7 +168,7 @@ The frontend proxies `/api` requests to FastAPI inside Docker. FastAPI owns auth
 
 ## Development
 
-The Docker stack mounts the backend application and frontend source for development. Use these commands after the services are running:
+The Docker stack mounts the backend application and frontend source for development. After starting the supported services, run:
 
 ```bash
 # Backend tests
@@ -194,7 +191,7 @@ env -u PYTHONPATH .venv/bin/pip install -e "backend[dev]"
 
 ## Operations and troubleshooting
 
-### Stop or reset the stack
+### Stop or reset the supported local stack
 
 ```bash
 # Stop containers and retain volumes
@@ -204,7 +201,7 @@ docker compose down
 docker compose down -v
 ```
 
-After `docker compose down -v`, repeat the [Airflow initialisation](#3-initialise-airflow-databases) step before starting the stack again.
+After `docker compose down -v`, repeat the [base Airflow initialisation](#3-initialise-the-base-airflow-database) step before starting services again.
 
 ### View logs
 
@@ -212,8 +209,8 @@ After `docker compose down -v`, repeat the [Airflow initialisation](#3-initialis
 docker compose logs -f fastapi
 docker compose logs -f frontend
 docker compose logs -f airflow-worker
-docker compose logs -f airflow-dw-worker
-docker compose logs -f airflow-mktg-worker
+docker compose logs -f airflow-scheduler
+docker compose logs -f airflow-api-server
 ```
 
 ### Docker Compose requires an encryption key
@@ -226,11 +223,10 @@ PostgreSQL 18 stores data in a version-specific volume path. For an expendable l
 
 ```bash
 docker compose down -v
-docker compose --profile init up \
-  airflow-db-init \
-  airflow-dw-db-init \
-  airflow-mktg-db-init
-docker compose up -d
+docker compose --profile init up airflow-db-init
+docker compose up -d \
+  postgres redis fastapi frontend \
+  airflow-api-server airflow-scheduler airflow-dag-processor airflow-worker
 ```
 
 ## License
