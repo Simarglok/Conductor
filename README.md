@@ -1,6 +1,6 @@
 # Conductor
 
-**Conductor** is an open-source foundation for building and operating data transformations. It combines dbt Core, Apache Airflow, a FastAPI control plane, and a React dashboard. The repository is in active development: the supported local path starts the control plane and one base Airflow environment, while the project-runtime workflow is not yet wired end to end.
+**Conductor** is an open-source foundation for building and operating data transformations. It combines dbt Core, Apache Airflow, a FastAPI control plane, and a React dashboard. Its target model is one control plane that manages multiple independent project runtimes. The repository is in active development; the current local Compose path does not yet provision that target model end to end.
 
 ## Stack
 
@@ -20,13 +20,13 @@
 - The API has project, membership, environment, Git configuration, Airflow, workspace, and administration endpoints.
 - Configured Git credentials are encrypted at rest and never returned by the API.
 - The dashboard provides routes and views for projects, pipeline data, development, Git, settings, and administration.
-- The base Airflow environment can be initialised and started locally.
+- The shared development Airflow instance can be initialised and started locally.
 
 The following pieces are present in the codebase but are **not a working local project workflow** yet:
 
 - The project-creation UI does not send the API's required `Idempotency-Key` header.
 - Project creation queues a provisioning job, but Docker Compose does not run a lifecycle worker and the default runner registry is intentionally empty. A project therefore remains in `PROVISIONING`.
-- The data-warehouse and marketing Airflow definitions expect PostgreSQL databases that the checked-in Compose flow does not create.
+- The checked-in `data-warehouse` and `marketing` Compose groups are example project instances; they expect PostgreSQL databases that the checked-in Compose flow does not create.
 - The code-server endpoint returns the Docker-internal URL `http://code-server:8080`, so the dashboard cannot open the published `localhost:8443` port in a host browser.
 - Git branch and commit views currently return placeholder data.
 
@@ -91,9 +91,9 @@ CONDUCTOR_DB_PASSWORD=replace-with-a-strong-password
 
 Keep `CONDUCTOR_CREDENTIALS_ENCRYPTION_KEY` unchanged for the lifetime of the data. Rotating or losing it makes previously encrypted Git credentials unreadable. The application-specific variables and defaults are documented in [`backend/.env.example`](backend/.env.example).
 
-### 3. Initialise the base Airflow database
+### 3. Initialise the shared development Airflow database
 
-Run this once for a new Docker volume. It migrates the base Airflow metadata database and creates its local admin user:
+Run this once for a new Docker volume. It migrates the shared development Airflow metadata database and creates its local admin user:
 
 ```bash
 docker compose --profile init up airflow-db-init
@@ -101,7 +101,7 @@ docker compose --profile init up airflow-db-init
 
 ### 4. Start the supported local services
 
-Start the control plane, dashboard, base Airflow, and their dependencies explicitly. Do not start the data-warehouse or marketing Airflow services until their database provisioning is wired into Compose.
+Start the control plane, dashboard, shared development Airflow, and their dependencies explicitly. Do not start the example `data-warehouse` or `marketing` Airflow groups until their database provisioning is wired into Compose.
 
 ```bash
 docker compose up -d \
@@ -118,7 +118,7 @@ docker compose ps
 | Conductor dashboard | <http://localhost:3000> | Sign in with the seeded `admin@conductor.local` / `admin`, or register a user |
 | Conductor API | <http://localhost:8000/docs> | OpenAPI / Swagger UI |
 | API health check | <http://localhost:8000/api/v1/health> | Reports PostgreSQL and Redis connectivity |
-| Base Airflow | <http://localhost:8080> | `admin` / `CONDUCTOR_AIRFLOW_ADMIN_PASSWORD` (defaults to `admin`) |
+| Shared development Airflow | <http://localhost:8080> | `admin` / `CONDUCTOR_AIRFLOW_ADMIN_PASSWORD` (defaults to `admin`) |
 | PostgreSQL | `localhost:5432` | `CONDUCTOR_DB_USER` / `CONDUCTOR_DB_PASSWORD` (both default to `conductor`) |
 | Redis | `localhost:6379` | Local development port |
 
@@ -130,23 +130,73 @@ The dashboard is useful for exercising authentication and inspecting the in-prog
 
 If you call `POST /api/v1/projects` directly, it requires a super-admin bearer token and an `Idempotency-Key` UUID header. It returns an accepted provisioning operation, not a ready project, because no lifecycle runner is configured. The Swagger UI at <http://localhost:8000/docs> is the authoritative reference for the implemented API contracts.
 
-The Compose file defines additional data-warehouse and marketing Airflow services on ports `8081` and `8082`, plus code-server on `8443`. They are not part of the supported quick-start path described above. See [Current implementation status](#current-implementation-status) for the present blockers.
+The Compose file defines `data-warehouse` and `marketing` as example project groups on ports `8081` and `8082`, plus code-server on `8443`. They are not part of the supported quick-start path described above. See [Current implementation status](#current-implementation-status) for the present blockers.
 
-## Architecture
+## Target architecture
 
-```text
-Browser
-  │
-  ├── React dashboard :3000 ───────────────┐
-  │                                         │
-  └─────────────────────────────────────────▼
-                                  FastAPI control plane :8000
-                                  ├── PostgreSQL :5432
-                                  ├── Redis :6379
-                                  └── Base Airflow :8080
+This diagram is the intended multi-project architecture. It separates the shared control plane from project runtimes; it does **not** claim that the current Docker Compose implementation already provisions every project service automatically.
+
+```mermaid
+flowchart TB
+    Browser[Browser]
+
+    subgraph ControlPlane[Conductor Control Plane]
+        direction TB
+        Frontend[React dashboard]
+        API[FastAPI control plane]
+        ControlDB[(PostgreSQL<br/>users · projects · settings)]
+        ControlRedis[(Redis<br/>sessions · control-plane cache)]
+
+        Frontend --> API
+        API --> ControlDB
+        API --> ControlRedis
+    end
+
+    subgraph Projects[Projects × N]
+        direction LR
+
+        subgraph Marketing[Project: Marketing]
+            direction TB
+            MarketingAPI[Airflow API Server]
+            MarketingScheduler[Scheduler]
+            MarketingProcessor[DAG Processor]
+            MarketingWorkers[Celery Workers]
+            MarketingDB[(Airflow metadata DB)]
+            MarketingQueue[(Project Redis queue)]
+
+            MarketingAPI --> MarketingDB
+            MarketingScheduler --> MarketingDB
+            MarketingProcessor --> MarketingDB
+            MarketingScheduler --> MarketingQueue
+            MarketingWorkers --> MarketingQueue
+        end
+
+        subgraph Warehouse[Project: Data Warehouse]
+            direction TB
+            WarehouseAPI[Airflow API Server]
+            WarehouseScheduler[Scheduler]
+            WarehouseProcessor[DAG Processor]
+            WarehouseWorkers[Celery Workers]
+            WarehouseDB[(Airflow metadata DB)]
+            WarehouseQueue[(Project Redis queue)]
+
+            WarehouseAPI --> WarehouseDB
+            WarehouseScheduler --> WarehouseDB
+            WarehouseProcessor --> WarehouseDB
+            WarehouseScheduler --> WarehouseQueue
+            WarehouseWorkers --> WarehouseQueue
+        end
+
+        MoreProjects[⋯ additional projects]
+    end
+
+    Browser --> Frontend
+    API -->|provision · authorize · proxy| MarketingAPI
+    API -->|provision · authorize · proxy| WarehouseAPI
+    API -. same contract .-> MoreProjects
 ```
 
-The frontend proxies `/api` requests to FastAPI inside Docker. FastAPI owns authentication, authorization, project metadata, credential encryption, and integration-facing API endpoints. The base Airflow environment runs with the CeleryExecutor; PostgreSQL stores its metadata and Redis serves as its broker.
+The React dashboard proxies `/api` requests to FastAPI. The control plane owns authentication, authorization, project metadata, credential encryption, and lifecycle orchestration. Each project runtime owns its Airflow API server, scheduler, DAG processor, Celery workers, Airflow metadata database, and isolated Redis queue/namespace. The shared development Airflow services in the current Compose file are a bootstrap implementation, not a separate product-level “base project”.
 
 ## Repository layout
 
@@ -201,7 +251,7 @@ docker compose down
 docker compose down -v
 ```
 
-After `docker compose down -v`, repeat the [base Airflow initialisation](#3-initialise-the-base-airflow-database) step before starting services again.
+After `docker compose down -v`, repeat the [shared development Airflow initialisation](#3-initialise-the-shared-development-airflow-database) step before starting services again.
 
 ### View logs
 
