@@ -144,8 +144,8 @@ flowchart TB
         direction TB
         Frontend[React dashboard]
         API[FastAPI control plane]
-        ControlDB[(PostgreSQL<br/>users · projects · settings)]
-        ControlRedis[(Redis<br/>sessions · control-plane cache)]
+        ControlDB[(PostgreSQL: users · projects · settings)]
+        ControlRedis[(Redis: sessions · control-plane cache)]
 
         Frontend --> API
         API --> ControlDB
